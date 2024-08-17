@@ -190,44 +190,6 @@ def mask_to_pil(mask) -> Image:
     mask_pil = Image.fromarray((mask_np * 255).astype(np.uint8))
     return mask_pil
 
-class MaskBlackener:
-    def __init__(self):
-        pass
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "image": ("IMAGE",),
-                "mask": ("MASK",),
-            },
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("blackened_image",)
-    FUNCTION = 'apply_black_mask'
-    CATEGORY = 'Image Processing'
-
-    def apply_black_mask(self, image, mask):
-        # Convert image tensor to PIL
-        image_pil = tensor2pil(image.squeeze(0)).convert('RGB')
-        
-        # Convert mask to PIL
-        mask_pil = mask_to_pil(mask).convert('L')
-        
-        # Create a black image of the same size
-        black_image = Image.new('RGB', image_pil.size, (0, 0, 0))
-        
-        # Apply the mask: use the original image where mask is black, and black image where mask is white
-        blackened_image = Image.composite(black_image, image_pil, mask_pil)
-        
-        # Convert the result back to tensor
-        blackened_image_tensor = pil2tensor(blackened_image)
-        
-        return (blackened_image_tensor,)
-
-
-
 class TTP_Image_Tile_Batch:
     def __init__(self, *args, **kwargs):
         pass
@@ -501,7 +463,6 @@ NODE_CLASS_MAPPINGS = {
     "TTPlanet_Tile_Preprocessor_GF": TTPlanet_Tile_Preprocessor_GF,
     "TTPlanet_Tile_Preprocessor_Simple": TTPlanet_Tile_Preprocessor_Simple,
     "TTPlanet_Tile_Preprocessor_cufoff": TTPlanet_Tile_Preprocessor_cufoff,
-    "TTPlanet_inpainting_Preprecessor": MaskBlackener,
     "TTP_Image_Tile_Batch": TTP_Image_Tile_Batch,
     "TTP_Image_Assy": TTP_Image_Assy,
     "TTP_CoordinateSplitter": TTP_CoordinateSplitter,
@@ -511,10 +472,9 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "TTPlanet_Tile_Preprocessor_GF": "🪐TTP Tile Preprocessor HYDiT GF",
-    "TTPlanet_Tile_Preprocessor_Simple": "🪐TTP Tile Preprocessor HYDiT  Simple",
-    "TTPlanet_Tile_Preprocessor_cufoff": "🪐TTP Tile Preprocessor HYDiT cufoff",
-    "TTPlanet_inpainting_Preprecessor" : "🪐TTP Inpainting Preprocessor HYDiT",
+    "TTPlanet_Tile_Preprocessor_GF": "🪐TTP Tile Preprocessor GF",
+    "TTPlanet_Tile_Preprocessor_Simple": "🪐TTP Tile Preprocessor Simple",
+    "TTPlanet_Tile_Preprocessor_cufoff": "🪐TTP Tile Preprocessor cufoff",
     "TTP_Image_Tile_Batch": "🪐TTP_Image_Tile_Batch",
     "TTP_Image_Assy": "🪐TTP_Image_Assy",
     "TTP_CoordinateSplitter": "🪐TTP_CoordinateSplitter",
