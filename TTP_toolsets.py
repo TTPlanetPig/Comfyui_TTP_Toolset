@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageFilter, ImageChops, ImageEnhance
 import node_helpers
+import torch
 
 def pil2tensor(image: Image) -> torch.Tensor:
     return torch.from_numpy(np.array(image).astype(np.float32) / 255.0).unsqueeze(0)
