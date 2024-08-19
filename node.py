@@ -459,24 +459,66 @@ class TTP_condsetarea_merge:
         combined_conditioning = sum(updated_conditionings, [])
         return (combined_conditioning,)
         
+class Tile_imageSize:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "width_factor": (
+                    "INT", 
+                    {"default": 3, "min": 1, "max": 10, "step": 1}  # 加入默认值及范围控制
+                ),   
+                "height_factor": (
+                    "INT", 
+                    {"default": 3, "min": 1, "max": 10, "step": 1}  # 加入默认值及范围控制
+                ),  
+            }
+        }
+
+    RETURN_TYPES = ("INT", "INT")
+    RETURN_NAMES = ("tile_width", "tile_height")
+    CATEGORY = "TTP/Image"
+    FUNCTION = "image_width_height"
+
+    def image_width_height(self, image, width_factor, height_factor):
+        _, raw_H, raw_W, _ = image.shape
+
+        # 应用输入的系数和0.9因子进行计算
+        tile_width = int(raw_W / (width_factor * 0.9))
+        tile_height = int(raw_H / (height_factor * 0.9))
+
+        # 验证 tile_width 和 tile_height 是否可以被8整除
+        if tile_width % 8 != 0:
+            tile_width = (tile_width // 8) * 8  # 调整到最近的可被8整除的值
+        if tile_height % 8 != 0:
+            tile_height = (tile_height // 8) * 8  # 调整到最近的可被8整除的值
+
+        # 返回结果
+        return (tile_width, tile_height)
+        
 NODE_CLASS_MAPPINGS = {
     "TTPlanet_Tile_Preprocessor_GF": TTPlanet_Tile_Preprocessor_GF,
     "TTPlanet_Tile_Preprocessor_Simple": TTPlanet_Tile_Preprocessor_Simple,
     "TTPlanet_Tile_Preprocessor_cufoff": TTPlanet_Tile_Preprocessor_cufoff,
+    "TTPlanet_inpainting_Preprecessor": MaskBlackener,
     "TTP_Image_Tile_Batch": TTP_Image_Tile_Batch,
     "TTP_Image_Assy": TTP_Image_Assy,
     "TTP_CoordinateSplitter": TTP_CoordinateSplitter,
     "TTP_condtobatch": TTP_condtobatch,
-    "TTP_condsetarea_merge": TTP_condsetarea_merge
+    "TTP_condsetarea_merge": TTP_condsetarea_merge,
+    "TTP_Tile_image_size": Tile_imageSize
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "TTPlanet_Tile_Preprocessor_GF": "🪐TTP Tile Preprocessor GF",
-    "TTPlanet_Tile_Preprocessor_Simple": "🪐TTP Tile Preprocessor Simple",
-    "TTPlanet_Tile_Preprocessor_cufoff": "🪐TTP Tile Preprocessor cufoff",
+    "TTPlanet_Tile_Preprocessor_GF": "🪐TTP Tile Preprocessor HYDiT GF",
+    "TTPlanet_Tile_Preprocessor_Simple": "🪐TTP Tile Preprocessor HYDiT  Simple",
+    "TTPlanet_Tile_Preprocessor_cufoff": "🪐TTP Tile Preprocessor HYDiT cufoff",
+    "TTPlanet_inpainting_Preprecessor" : "🪐TTP Inpainting Preprocessor HYDiT",
     "TTP_Image_Tile_Batch": "🪐TTP_Image_Tile_Batch",
     "TTP_Image_Assy": "🪐TTP_Image_Assy",
     "TTP_CoordinateSplitter": "🪐TTP_CoordinateSplitter",
     "TTP_condtobatch": "🌐TTP_cond to batch",
-    "TTP_condsetarea_merge": "🌐TTP_condsetarea_merge"
+    "TTP_condsetarea_merge": "🌐TTP_condsetarea_merge",
+    "TTP_Tile_image_size": "🌐TTP_Tile_image_size"
 }
