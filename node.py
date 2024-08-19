@@ -466,7 +466,6 @@ NODE_CLASS_MAPPINGS = {
     "TTP_Image_Tile_Batch": TTP_Image_Tile_Batch,
     "TTP_Image_Assy": TTP_Image_Assy,
     "TTP_CoordinateSplitter": TTP_CoordinateSplitter,
-    "TTP_ConditioningSetArea": TTP_ConditioningSetArea,
     "TTP_condtobatch": TTP_condtobatch,
     "TTP_condsetarea_merge": TTP_condsetarea_merge
 }
@@ -478,7 +477,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TTP_Image_Tile_Batch": "🪐TTP_Image_Tile_Batch",
     "TTP_Image_Assy": "🪐TTP_Image_Assy",
     "TTP_CoordinateSplitter": "🪐TTP_CoordinateSplitter",
-    "TTP_ConditioningSetArea": "🌐TTP_ConditioningSetArea",
     "TTP_condtobatch": "🌐TTP_cond to batch",
     "TTP_condsetarea_merge": "🌐TTP_condsetarea_merge"
 }
