@@ -1,5 +1,5 @@
-This is an simple logic amazaing upscale node for DIT model. it can be common use for Flux,Hunyuan,SD3
-It can simple tile the intial image into pieces and then use image-interrogator to get each tile prompts for more accurate upscale process.
+This is an simple logic amazing upscale node for DIT model. it can be common use for Flux,Hunyuan,SD3
+It can simple tile the initial image into pieces and then use image-interrogator to get each tile prompts for more accurate upscale process.
 The condition will be properly handled and the hallucination will be significangly eliemated.
 
 #Wish you will enjoy it.
