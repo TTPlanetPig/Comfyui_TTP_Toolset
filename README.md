@@ -64,8 +64,8 @@ For the instant Flux example: please refer to this image with workflow in it.
 it can support the controlnet Tile to enhance the upscale if you have it ready, here is an example to use tile for Hunyuan DiT
 you can find the tile from my huggingface https://huggingface.co/TTPlanet
 
-![image](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Flux_8Maga_Pixel_image_upscale_process.png)
+![image](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Flux_8Mega_Pixel_image_upscale_process.png)
 and hunyuan 1.2 from here https://huggingface.co/comfyanonymous/hunyuan_dit_comfyui/blob/main/hunyuan_dit_1.2.safetensors
 and here is the workflow for example:
 
-![image](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Hunyuan_8Maga_Pixel_image_upscale_process_with_tile_cn.png)
+![image](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Hunyuan_8Mega_Pixel_image_upscale_process_with_tile_cn.png)
