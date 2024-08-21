@@ -71,4 +71,11 @@ and here is the workflow for example:
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=TTPlanetPig/Comfyui_TTP_Toolset&type=Date)](https://star-history.com/#TTPlanetPig/Comfyui_TTP_Toolset&Date)
+<a href="https://star-history.com/#TTPlanetPig/Comfyui_TTP_Toolset&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=TTPlanetPig/Comfyui_TTP_Toolset&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=TTPlanetPig/Comfyui_TTP_Toolset&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=TTPlanetPig/Comfyui_TTP_Toolset&type=Date" />
+ </picture>
+</a>
+
