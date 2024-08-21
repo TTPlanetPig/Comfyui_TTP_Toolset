@@ -67,3 +67,8 @@ and hunyuan 1.2 from here https://huggingface.co/comfyanonymous/hunyuan_dit_comf
 and here is the workflow for example:
 
 ![image](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Hunyuan_8Mega_Pixel_image_upscale_process_with_tile_cn.png)
+
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=TTPlanetPig/Comfyui_TTP_Toolset&type=Date)](https://star-history.com/#TTPlanetPig/Comfyui_TTP_Toolset&Date)
