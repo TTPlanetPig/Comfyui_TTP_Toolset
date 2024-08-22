@@ -340,14 +340,9 @@ class Tile_imageSize:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "width_factor": (
-                    "INT", 
-                    {"default": 3, "min": 1, "max": 10, "step": 1}
-                ),   
-                "height_factor": (
-                    "INT", 
-                    {"default": 3, "min": 1, "max": 10, "step": 1}
-                ),  
+                "width_factor": ("INT", {"default": 3, "min": 1, "max": 10, "step": 1}),   
+                "height_factor": ("INT", {"default": 3, "min": 1, "max": 10, "step": 1}),
+                "overlap_rate": ("FLOAT", {"default": 0.1, "min": 0.05, "max": 0.95, "step": 0.05}),                
             }
         }
 
@@ -356,12 +351,12 @@ class Tile_imageSize:
     CATEGORY = "TTP/Image"
     FUNCTION = "image_width_height"
 
-    def image_width_height(self, image, width_factor, height_factor):
+    def image_width_height(self, image, width_factor, height_factor, overlap_rate):
         _, raw_H, raw_W, _ = image.shape
 
         # 应用输入的系数和0.9因子进行计算
-        tile_width = int(raw_W / (width_factor * 0.9))
-        tile_height = int(raw_H / (height_factor * 0.9))
+        tile_width = int(raw_W / (width_factor * (1-overlap_rate)))
+        tile_height = int(raw_H / (height_factor * (1-overlap_rate)))
 
         # 验证 tile_width 和 tile_height 是否可以被8整除
         if tile_width % 8 != 0:
