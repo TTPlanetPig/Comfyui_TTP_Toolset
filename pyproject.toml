@@ -1,0 +1,14 @@
+[project]
+name = "comfyui_ttp_toolset"
+description = "This is a workflow for my simple logic amazing upscale node for DIT model. it can be common use for Flux,Hunyuan,SD3 It can simple tile the initial image into pieces and then use image-interrogator to get each tile prompts for more accurate upscale process. The condition will be properly handled and the hallucination will be significantly eliminated."
+version = "1.0.5"
+license = {file = "LICENSE"}
+
+[project.urls]
+Repository = "https://github.com/TTPlanetPig/Comfyui_TTP_Toolset"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = "ttplanet"
+DisplayName = "Comfyui_TTP_Toolset"
+Icon = "🪐"
