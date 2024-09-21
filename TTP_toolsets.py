@@ -206,7 +206,6 @@ class TTP_Image_Assy:
             result.paste(tile2.crop((0, offset_top + blend_size, tile2.width, tile2.height)), (0, tile1.height - offset_bottom))
         return result
 
-
     def assemble_image(self, tiles, positions, original_size, grid_size, padding):
         num_cols, num_rows = grid_size
         reconstructed_image = Image.new("RGB", original_size)
@@ -378,6 +377,7 @@ class Tile_imageSize:
         # 返回结果
         return (tile_width, tile_height)
         
+        
 NODE_CLASS_MAPPINGS = {
     "TTPlanet_Tile_Preprocessor_Simple": TTPlanet_Tile_Preprocessor_Simple,
     "TTP_Image_Tile_Batch": TTP_Image_Tile_Batch,
@@ -389,11 +389,11 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "TTPlanet_Tile_Preprocessor_Simple": "🪐TTP Tile Preprocessor Simple",
-    "TTP_Image_Tile_Batch": "🪐TTP_Image_Tile_Batch",
-    "TTP_Image_Assy": "🪐TTP_Image_Assy",
-    "TTP_CoordinateSplitter": "🪐TTP_CoordinateSplitter",
-    "TTP_condtobatch": "🪐TTP_cond to batch",
-    "TTP_condsetarea_merge": "🪐TTP_condsetarea_merge",
-    "TTP_Tile_image_size": "🪐TTP_Tile_image_size"
+    "TTPlanet_Tile_Preprocessor_Simple": "�TTP Tile Preprocessor Simple",
+    "TTP_Image_Tile_Batch": "�TTP_Image_Tile_Batch",
+    "TTP_Image_Assy": "�TTP_Image_Assy",
+    "TTP_CoordinateSplitter": "�TTP_CoordinateSplitter",
+    "TTP_condtobatch": "�TTP_cond to batch",
+    "TTP_condsetarea_merge": "�TTP_condsetarea_merge",
+    "TTP_Tile_image_size": "�TTP_Tile_image_size"
 }
