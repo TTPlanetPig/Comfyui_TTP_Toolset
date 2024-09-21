@@ -166,35 +166,46 @@ class TTP_Image_Assy:
         if blend_size > overlap_size:
             blend_size = overlap_size
 
-        # Correct the crop starting point to align the mask with the center of the overlap
-        offset = (overlap_size - blend_size) // 2
+        # 计算左偏移和右偏移，确保裁剪尺寸一致
+        offset_total = overlap_size - blend_size
+        offset_left = offset_total // 2
+        offset_right = offset_total - offset_left
 
         size = (blend_size, tile1.height) if direction == 'horizontal' else (tile1.width, blend_size)
         mask = self.create_gradient_mask(size, direction)
 
         if direction == 'horizontal':
-            crop_tile1 = tile1.crop((tile1.width - overlap_size + offset, 0, tile1.width - offset, tile1.height))
-            crop_tile2 = tile2.crop((offset, 0, offset + blend_size, tile2.height))
+            crop_tile1 = tile1.crop((tile1.width - overlap_size + offset_left, 0, tile1.width - offset_right, tile1.height))
+            crop_tile2 = tile2.crop((offset_left, 0, offset_left + blend_size, tile2.height))
             if crop_tile1.size != crop_tile2.size:
                 raise ValueError(f"Crop sizes do not match: {crop_tile1.size} vs {crop_tile2.size}")
 
             blended = Image.composite(crop_tile1, crop_tile2, mask)
             result = Image.new("RGB", (tile1.width + tile2.width - overlap_size, tile1.height))
-            result.paste(tile1.crop((0, 0, tile1.width - overlap_size + offset, tile1.height)), (0, 0))
-            result.paste(blended, (tile1.width - overlap_size + offset, 0))
-            result.paste(tile2.crop((offset + blend_size, 0, tile2.width, tile2.height)), (tile1.width - offset, 0))
+            result.paste(tile1.crop((0, 0, tile1.width - overlap_size + offset_left, tile1.height)), (0, 0))
+            result.paste(blended, (tile1.width - overlap_size + offset_left, 0))
+            result.paste(tile2.crop((offset_left + blend_size, 0, tile2.width, tile2.height)), (tile1.width - offset_right, 0))
         else:
-            crop_tile1 = tile1.crop((0, tile1.height - overlap_size + offset, tile1.width, tile1.height - offset))
-            crop_tile2 = tile2.crop((0, offset, tile2.width, offset + blend_size))
+            # 对于垂直方向，进行类似的调整
+            offset_total = overlap_size - blend_size
+            offset_top = offset_total // 2
+            offset_bottom = offset_total - offset_top
+
+            size = (tile1.width, blend_size)
+            mask = self.create_gradient_mask(size, direction)
+
+            crop_tile1 = tile1.crop((0, tile1.height - overlap_size + offset_top, tile1.width, tile1.height - offset_bottom))
+            crop_tile2 = tile2.crop((0, offset_top, tile2.width, offset_top + blend_size))
             if crop_tile1.size != crop_tile2.size:
                 raise ValueError(f"Crop sizes do not match: {crop_tile1.size} vs {crop_tile2.size}")
 
             blended = Image.composite(crop_tile1, crop_tile2, mask)
             result = Image.new("RGB", (tile1.width, tile1.height + tile2.height - overlap_size))
-            result.paste(tile1.crop((0, 0, tile1.width, tile1.height - overlap_size + offset)), (0, 0))
-            result.paste(blended, (0, tile1.height - overlap_size + offset))
-            result.paste(tile2.crop((0, offset + blend_size, tile2.width, tile2.height)), (0, tile1.height - offset))
+            result.paste(tile1.crop((0, 0, tile1.width, tile1.height - overlap_size + offset_top)), (0, 0))
+            result.paste(blended, (0, tile1.height - overlap_size + offset_top))
+            result.paste(tile2.crop((0, offset_top + blend_size, tile2.width, tile2.height)), (0, tile1.height - offset_bottom))
         return result
+
 
     def assemble_image(self, tiles, positions, original_size, grid_size, padding):
         num_cols, num_rows = grid_size
