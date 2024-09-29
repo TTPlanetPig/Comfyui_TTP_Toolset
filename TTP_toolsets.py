@@ -352,7 +352,7 @@ class Tile_imageSize:
                 "image": ("IMAGE",),
                 "width_factor": ("INT", {"default": 3, "min": 1, "max": 10, "step": 1}),   
                 "height_factor": ("INT", {"default": 3, "min": 1, "max": 10, "step": 1}),
-                "overlap_rate": ("FLOAT", {"default": 0.1, "min": 0.05, "max": 0.95, "step": 0.05}),                
+                "overlap_rate": ("FLOAT", {"default": 0.1, "min": 0.00, "max": 0.95, "step": 0.05}),                
             }
         }
 
