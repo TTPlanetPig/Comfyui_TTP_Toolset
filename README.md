@@ -58,11 +58,13 @@ just connect it with CoordinateSplitter node and Cond to Batch node.
 
 
 For the instant Flux example: please refer to this image with workflow in it.
+Pixel exmaple(recommended):
+![image](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Flux_8Mega_Pixel_image_upscale_process_pixel.png)
 
+Latent example:
+![image](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Flux_8Mega_Pixel_image_upscale_process.png)
 it can support the controlnet Tile to enhance the upscale if you have it ready, here is an example to use tile for Hunyuan DiT
 you can find the tile from my huggingface https://huggingface.co/TTPlanet
-
-![image](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Flux_8Mega_Pixel_image_upscale_process.png)
 and hunyuan 1.2 from here https://huggingface.co/comfyanonymous/hunyuan_dit_comfyui/blob/main/hunyuan_dit_1.2.safetensors
 and here is the workflow for example:
 
