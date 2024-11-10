@@ -363,16 +363,25 @@ class Tile_imageSize:
 
     def image_width_height(self, image, width_factor, height_factor, overlap_rate):
         _, raw_H, raw_W, _ = image.shape
+        if overlap_rate == 0:
+            tile_width = int(raw_W / width_factor)
+            tile_height = int(raw_H / height_factor)
+            # 验证 tile_width 和 tile_height 是否可以被8整除
+            if tile_width % 8 != 0:
+                tile_width = ((tile_width + 7) // 8) * 8
+            if tile_height % 8 != 0:
+                tile_height = ((tile_height + 7) // 8) * 8
+        
+        else:
+            # 使用正确的公式计算 tile_width 和 tile_height
+            tile_width = int(raw_W / (1 + (width_factor - 1) * (1 - overlap_rate)))
+            tile_height = int(raw_H / (1 + (height_factor - 1) * (1 - overlap_rate)))
 
-        # 使用正确的公式计算 tile_width 和 tile_height
-        tile_width = int(raw_W / (1 + (width_factor - 1) * (1 - overlap_rate)))
-        tile_height = int(raw_H / (1 + (height_factor - 1) * (1 - overlap_rate)))
-
-        # 验证 tile_width 和 tile_height 是否可以被8整除
-        if tile_width % 8 != 0:
-            tile_width = (tile_width // 8) * 8  # 调整到最近的可被8整除的值
-        if tile_height % 8 != 0:
-            tile_height = (tile_height // 8) * 8  # 调整到最近的可被8整除的值
+            # 验证 tile_width 和 tile_height 是否可以被8整除
+            if tile_width % 8 != 0:
+                tile_width = (tile_width // 8) * 8
+            if tile_height % 8 != 0:
+                tile_height = (tile_height // 8) * 8
 
         # 返回结果
         return (tile_width, tile_height)
