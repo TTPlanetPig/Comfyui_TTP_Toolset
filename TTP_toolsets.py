@@ -10,12 +10,6 @@ def pil2tensor(image: Image) -> torch.Tensor:
 def tensor2pil(t_image: torch.Tensor) -> Image:
     return Image.fromarray(np.clip(255.0 * t_image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
 
-def apply_gaussian_blur(image_np, ksize=5, sigmaX=1.0):
-    if ksize % 2 == 0:
-        ksize += 1  # ksize must be odd
-    blurred_image = cv2.GaussianBlur(image_np, (ksize, ksize), sigmaX=sigmaX)
-    return blurred_image
-
         
 class TTPlanet_Tile_Preprocessor_Simple:
     def __init__(self, blur_strength=3.0):
@@ -35,7 +29,7 @@ class TTPlanet_Tile_Preprocessor_Simple:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image_output",)
     FUNCTION = 'process_image'
-    CATEGORY = 'TTP_TILE'
+    CATEGORY = 'TTP/TILE'
 
     def process_image(self, image, scale_factor, blur_strength):
         ret_images = []
@@ -83,7 +77,7 @@ class TTP_Image_Tile_Batch:
     RETURN_NAMES = ("IMAGES", "POSITIONS", "ORIGINAL_SIZE", "GRID_SIZE")
     FUNCTION = "tile_image"
 
-    CATEGORY = "Image/Process"
+    CATEGORY = "TTP/Image"
 
     def tile_image(self, image, tile_width=1024, tile_height=1024):
         image = tensor2pil(image.squeeze(0))
@@ -147,7 +141,7 @@ class TTP_Image_Assy:
     RETURN_NAMES = ("RECONSTRUCTED_IMAGE",)
     FUNCTION = "assemble_image"
 
-    CATEGORY = "Image/Process"
+    CATEGORY = "TTP/Image"
 
     def create_gradient_mask(self, size, direction):
         """Create a gradient mask for blending."""
@@ -253,7 +247,7 @@ class TTP_CoordinateSplitter:
     RETURN_NAMES = ("Coordinates",)
     FUNCTION = "split_coordinates"
 
-    CATEGORY = "Image/Process"
+    CATEGORY = "TTP/Conditioning"
     
     def split_coordinates(self, Positions):
         coordinates = []
@@ -343,6 +337,82 @@ class TTP_condsetarea_merge:
         # 将所有更新后的conditioning重新组合为一个batch
         combined_conditioning = sum(updated_conditionings, [])
         return (combined_conditioning,)
+
+class TTP_condsetarea_merge_test:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "conditioning_batch": ("CONDITIONING", {"forceInput": True}),
+                "coordinates": ("LIST", {"forceInput": True}),
+                "group_size": ("INT", {"default": 1, "min": 1, "step": 1}),
+                "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
+            }
+        }
+
+    RETURN_TYPES = ("CONDITIONING",)
+    FUNCTION = "apply_coordinates_to_batch"
+
+    CATEGORY = "TTP/Conditioning"
+
+    def apply_coordinates_to_batch(self, conditioning_batch, coordinates, group_size, strength):
+        import math
+
+        # 计算 conditioning 中的组数
+        num_conditionings = len(conditioning_batch)
+        num_groups = math.ceil(num_conditionings / group_size)
+
+        # 如果坐标数量大于组数，需要复制 conditioning
+        if len(coordinates) > num_groups:
+            # 计算需要的倍数
+            multiplier = math.ceil(len(coordinates) * group_size / num_conditionings)
+            # 复制 conditioning_batch
+            conditioning_batch = conditioning_batch * multiplier
+            num_conditionings = len(conditioning_batch)
+            num_groups = math.ceil(num_conditionings / group_size)
+
+        # 重新计算需要的坐标数量
+        required_coords = num_groups
+
+        # 检查坐标数量是否足够
+        if len(coordinates) != required_coords:
+            raise ValueError(f"The number of coordinates ({len(coordinates)}) does not match the required number ({required_coords}) based on group size ({group_size}) and conditioning length ({num_conditionings})")
+
+        updated_conditionings = []
+        conditioning_index = 0
+
+        # 遍历坐标和分组
+        for coord in coordinates:
+            if len(coord) != 4:
+                raise ValueError(f"Each coordinate should have exactly 4 values, but got {len(coord)}")
+
+            x, y, width, height = coord
+
+            # 打印调试信息
+            print(f"Processing coordinate - x: {x}, y: {y}, width: {width}, height: {height}")
+
+            # 获取当前组的 conditioning
+            group_conditionings = conditioning_batch[conditioning_index:conditioning_index + group_size]
+
+            for conditioning in group_conditionings:
+                # 使用标准的 node_helpers.conditioning_set_values 方法进行区域设置
+                updated_conditioning = node_helpers.conditioning_set_values(
+                    [conditioning],
+                    {
+                        "area": (height // 8, width // 8, y // 8, x // 8),
+                        "strength": strength,
+                        "set_area_to_bounds": False,
+                    }
+                )
+
+                updated_conditionings.append(updated_conditioning)
+
+            conditioning_index += group_size
+
+        # 将所有更新后的 conditioning 重新组合为一个批次
+        combined_conditioning = sum(updated_conditionings, [])
+        return (combined_conditioning,)
+
         
 class Tile_imageSize:
     @classmethod
@@ -386,6 +456,146 @@ class Tile_imageSize:
         # 返回结果
         return (tile_width, tile_height)
         
+class TTP_Expand_And_Mask:
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),  # 输入一张图片
+                "fill_mode": (["duplicate", "white"], {"default": "duplicate", "label": "Fill Mode"}),
+                # fill_mode是一个字符串列表参数，可以选择"duplicate"或"white"
+                "direction": (["left", "right", "top", "bottom"], {"default": "right", "label": "Expansion Direction"}),
+                # direction是一个字符串列表参数，可以选择扩展方向："left", "right", "top", "bottom"
+                "num_blocks": ("INT", {"default": 1, "min": 1, "max": 2, "step": 1, "label": "Number of Blocks"}),
+                # num_blocks表示要添加扩展块的数量，可选择1或2
+                "fill_alpha_decision": ("BOOLEAN", {"default": False, "label": "Fill Alpha with White"}),
+                # fill_alpha_decision为一个布尔值参数，用来决定是否将输出图像透明区域填充为白色
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_NAMES = ("EXPANDED_IMAGE", "MASK")
+    FUNCTION = "expand_and_mask"
+    CATEGORY = "TTP/Image"
+
+    def expand_and_mask(self, image, fill_mode="duplicate", direction="right", num_blocks=1, fill_alpha_decision=False):
+        pil_image = tensor2pil(image)
+        width, height = pil_image.size
+        has_alpha = (pil_image.mode == 'RGBA')
+
+
+        def create_fill_image():
+            if pil_image.mode == 'RGBA':
+                return Image.new("RGBA", (width, height), color=(255, 255, 255, 255))
+            elif pil_image.mode == 'RGB':
+                return Image.new("RGB", (width, height), color=(255, 255, 255))
+            elif pil_image.mode == 'L':
+                return Image.new("L", (width, height), color=255)
+            else:
+                raise ValueError(f"Unsupported image mode for fill: {pil_image.mode}")
+
+        if fill_mode == "duplicate":
+            fill_image = pil_image.copy()
+        elif fill_mode == "white":
+            fill_image = create_fill_image()
+        else:
+            fill_image = pil_image.copy()
+
+        if direction in ["left", "right"]:
+            new_width = width + width * num_blocks
+            new_height = height
+        else:  # direction in ["top", "bottom"]
+            new_width = width
+            new_height = height + height * num_blocks
+
+        expanded_image_mode = pil_image.mode
+        expanded_image = Image.new(expanded_image_mode, (new_width, new_height))
+
+        if direction == "left":
+            for i in range(num_blocks):
+                expanded_image.paste(fill_image, (width * i, 0))
+            expanded_image.paste(pil_image, (width * num_blocks, 0))
+        elif direction == "right":
+            expanded_image.paste(pil_image, (0, 0))
+            for i in range(num_blocks):
+                expanded_image.paste(fill_image, (width + width * i, 0))
+        elif direction == "top":
+            for i in range(num_blocks):
+                expanded_image.paste(fill_image, (0, height * i))
+            expanded_image.paste(pil_image, (0, height * num_blocks))
+        elif direction == "bottom":
+            expanded_image.paste(pil_image, (0, 0))
+            for i in range(num_blocks):
+                expanded_image.paste(fill_image, (0, height + height * i))
+        else:
+            raise ValueError(f"Unsupported direction: {direction}")
+
+        mask_array = np.zeros((new_height, new_width), dtype=np.float32)
+
+        if has_alpha:
+            alpha_array = np.array(pil_image.getchannel("A"), dtype=np.float32) / 255.0
+            alpha_mask_array = 1.0 - alpha_array
+
+            if direction == "left":
+                mask_array[:, width * num_blocks:width * num_blocks + width] = alpha_mask_array
+            elif direction == "right":
+                mask_array[:, :width] = alpha_mask_array
+            elif direction == "top":
+                mask_array[height * num_blocks:height * num_blocks + height, :] = alpha_mask_array
+            elif direction == "bottom":
+                mask_array[:height, :] = alpha_mask_array
+
+        if direction == "left":
+            mask_array[:, :width * num_blocks] = 1.0
+        elif direction == "right":
+            mask_array[:, width:] = 1.0
+        elif direction == "top":
+            mask_array[:height * num_blocks, :] = 1.0
+        elif direction == "bottom":
+            mask_array[height:, :] = 1.0
+
+        mask_tensor = torch.from_numpy(mask_array).unsqueeze(0).unsqueeze(0)
+
+        if fill_alpha_decision and has_alpha:
+            expanded_image = expanded_image.convert('RGBA')  # 确保图像是RGBA模式
+            background = Image.new('RGBA', expanded_image.size, (255, 255, 255, 255)) 
+            expanded_image = Image.alpha_composite(background, expanded_image)
+            expanded_image = expanded_image.convert('RGB')  # 转换为RGB模式
+            expanded_image_mode = 'RGB'
+
+        expanded_image_tensor = pil2tensor(expanded_image)
+
+        return (expanded_image_tensor, mask_tensor)
+        
+class TTP_text_mix:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "text1": ("STRING", {"default": "", "multiline": True, "label": "Text Box 1"}),
+                "text2": ("STRING", {"default": "", "multiline": True, "label": "Text Box 2"}),
+                "text3": ("STRING", {"default": "", "multiline": True, "label": "Text Box 3"}),
+                "template": ("STRING", {"default": "", "multiline": True, "label": "Template Text Box"}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("text1", "text2", "text3", "final_text")
+    FUNCTION = "mix_texts"
+    CATEGORY = "TTP/text"
+
+    def mix_texts(self, text1, text2, text3, template):
+        # 使用replace方法替换模板中的占位符{text1}和{text2}
+        final_text = template.replace("{text1}", text1).replace("{text2}", text2).replace("{text3}", text3)
+
+        return (text1, text2, text3, final_text)
         
 NODE_CLASS_MAPPINGS = {
     "TTPlanet_Tile_Preprocessor_Simple": TTPlanet_Tile_Preprocessor_Simple,
@@ -394,7 +604,10 @@ NODE_CLASS_MAPPINGS = {
     "TTP_CoordinateSplitter": TTP_CoordinateSplitter,
     "TTP_condtobatch": TTP_condtobatch,
     "TTP_condsetarea_merge": TTP_condsetarea_merge,
-    "TTP_Tile_image_size": Tile_imageSize
+    "TTP_Tile_image_size": Tile_imageSize,
+    "TTP_condsetarea_merge_test": TTP_condsetarea_merge_test,
+    "TTP_Expand_And_Mask": TTP_Expand_And_Mask,
+    "TTP_text_mix": TTP_text_mix
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -404,5 +617,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TTP_CoordinateSplitter": "�TTP_CoordinateSplitter",
     "TTP_condtobatch": "�TTP_cond to batch",
     "TTP_condsetarea_merge": "�TTP_condsetarea_merge",
-    "TTP_Tile_image_size": "�TTP_Tile_image_size"
+    "TTP_Tile_image_size": "�TTP_Tile_image_size",
+    "TTP_condsetarea_merge_test": "TTP_condsetarea_merge_test",
+    "TTP_Expand_And_Mask": "TTP_Expand_And_Mask",
+    "TTP_text_mix": "TTP_text_mix"
 }
