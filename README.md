@@ -1,78 +1,115 @@
-This is a workflow for my simple logic amazing upscale node for DIT model. it can be common use for Flux,Hunyuan,SD3 It can simple tile the initial image into pieces and then use image-interrogator to get each tile prompts for more accurate upscale process. The condition will be properly handled and the hallucination will be significantly eliminated.
+# **Amazing Upscale Node Workflow for DIT Model**
 
-#Wish you will enjoy it.
+This workflow is designed for **simple logic amazing upscale nodes** in the **DIT model**. It supports common applications for **Flux**, **Hunyuan**, and **SD3**. The workflow tiles the initial image into smaller pieces, uses an image-interrogator to extract prompts for each tile, and performs an accurate upscale process. This approach minimizes hallucinations and ensures proper condition handling.
 
-# Instruction:
+We hope you enjoy using it!
 
-# Image Tile batch node:
+---
 
-This one will cut image into piece by automaticly by your set width and height.
-Record the necessory informaion for further use
+## **Instructions**
 
-![image](https://github.com/user-attachments/assets/9e808b33-37ff-4800-abdf-a22cce9825c1)
+### **1. Image Tile Batch Node**
+This node cuts an image into pieces automatically based on your specified width and height. It also records the necessary information for further processing.
 
-width: the tile image width
+| Parameter | Description                         |
+|-----------|-------------------------------------|
+| **Width** | The width of each tile.            |
+| **Height** | The height of each tile.           |
+| **Image** | The image to be tiled.             |
 
-height: the tile image height
+**Node View**:
 
-image: the image to be tiled
+![Image Tile Batch Node](https://github.com/user-attachments/assets/9e808b33-37ff-4800-abdf-a22cce9825c1)
 
-# Image Assy node:
-This node will assemble the image piece into one again and provent the possible lines between the pieces of images. it works in pixel mode
+---
 
-![image](https://github.com/user-attachments/assets/3f9e8ba9-0c79-4984-ae8e-90b3a8ce23f1)
+### **2. Image Assembly Node**
+This node reassembles image tiles back into a complete image while preventing visible lines between the tiles. It operates in pixel mode.
 
+| Parameter   | Description                                                   |
+|-------------|---------------------------------------------------------------|
+| **Tiles**   | Input the tiled image batch. Replace individual tiles if needed. |
+| **Position** | Paired with the Image Tile Batch Node.                        |
+| **Original Size** | Paired with the Image Tile Batch Node.                  |
+| **Grid Size** | Paired with the Image Tile Batch Node.                      |
+| **Padding** | The padding value used to merge the image pieces.             |
 
-tiles: input the tiled image batch, you can replace one of them in the middle if you want by other batch nodes
+**Node View**:
 
-postion: paired with image tile batch node
+![Image Assembly Node](https://github.com/user-attachments/assets/3f9e8ba9-0c79-4984-ae8e-90b3a8ce23f1)
 
-original size: paired with image tile batch node
+---
 
-grid size: paired with image tile batch node
+### **3. Tile Image Size Node**
+This node calculates the resolution of each tile based on the original image dimensions and your specified width/height factors.
 
-Padding: the padding for the image to merge together.
+| Parameter         | Description                                                        |
+|-------------------|--------------------------------------------------------------------|
+| **Width Factor**  | Divides the image width into equal parts.                          |
+| **Height Factor** | Divides the image height into equal parts.                         |
 
-# Tile image size node:
-This node is build to decide how many pieces you want to divide by image tile batch node, it will obtain the information from the original image and caluclate the resolution for tile image:
+For example: A width factor of `2` and a height factor of `3` will divide the image into `6` equal tiles.
 
-![image](https://github.com/user-attachments/assets/b3ef38df-a620-4930-9288-d0881cfe7148)
+**Node View**:
 
-just input the width and height factors, it will cut. the 2,3 means from width cut into 2 pieces and from height cut into 3 pieces. total 6 pieces.
+![Tile Image Size Node](https://github.com/user-attachments/assets/b3ef38df-a620-4930-9288-d0881cfe7148)
 
-# CoordinateSplitter node:
-Convert the Position information into Coordinate, connect it to the positions
+---
 
-![image](https://github.com/user-attachments/assets/25b73335-db42-4110-8138-6af07e45a8d8)
+### **4. Coordinate Splitter Node**
+This node converts position information into coordinates and connects them to the corresponding positions.
 
+**Node View**:
 
-# Cond to Batch node:
-Convert the cond list into batch, I keep this node for future fuction expansion. connect it to the conditions.
-![image](https://github.com/user-attachments/assets/f92a9ddc-1a98-4687-8875-03802e916dd4)
+![Coordinate Splitter Node](https://github.com/user-attachments/assets/25b73335-db42-4110-8138-6af07e45a8d8)
 
-# Condition merge node:
-This one will merge all the tiled condition into one piece and ready for build the image!
-just connect it with CoordinateSplitter node and Cond to Batch node.
+---
 
-![image](https://github.com/user-attachments/assets/3039c8a3-8284-4b71-a9de-4120723258c7)
+### **5. Cond to Batch Node**
+This node converts condition lists into batches. It is reserved for future functionality expansion and connects to the conditions.
 
+**Node View**:
 
-For the instant Flux example: please refer to this image with workflow in it.
-Pixel exmaple(recommended):
-![image](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Flux_8Mega_Pixel_image_upscale_process_pixel.png)
+![Cond to Batch Node](https://github.com/user-attachments/assets/f92a9ddc-1a98-4687-8875-03802e916dd4)
 
-Latent example:
-![image](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Flux_8Mega_Pixel_image_upscale_process.png)
-it can support the controlnet Tile to enhance the upscale if you have it ready, here is an example to use tile for Hunyuan DiT
-you can find the tile from my huggingface https://huggingface.co/TTPlanet
-and hunyuan 1.2 from here https://huggingface.co/comfyanonymous/hunyuan_dit_comfyui/blob/main/hunyuan_dit_1.2.safetensors
-and here is the workflow for example:
+---
 
-![image](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Hunyuan_8Mega_Pixel_image_upscale_process_with_tile_cn.png)
+### **6. Condition Merge Node**
+This node merges all tiled conditions into one and prepares them for building the final image. It connects to the **Coordinate Splitter Node** and **Cond to Batch Node**.
 
+**Node View**:
 
-## Star History
+![Condition Merge Node](https://github.com/user-attachments/assets/3039c8a3-8284-4b71-a9de-4120723258c7)
 
+---
+
+## **Examples**
+
+### **Pixel Example (Recommended)**
+
+![Pixel Example Workflow](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Flux_8Mega_Pixel_image_upscale_process_pixel.png)
+
+### **Latent Example**
+
+![Latent Example Workflow](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Flux_8Mega_Pixel_image_upscale_process.png)
+
+---
+
+### **ControlNet Tile Integration**
+This workflow supports **ControlNet Tile** for enhanced upscaling. Here's an example of using tiles with the **Hunyuan DIT** model:
+
+| Resource | Link                                                                                          |
+|----------|-----------------------------------------------------------------------------------------------|
+| **Tile Example** | [Hugging Face Tile](https://huggingface.co/TTPlanet)                                  |
+| **Hunyuan 1.2**  | [Download Hunyuan 1.2](https://huggingface.co/comfyanonymous/hunyuan_dit_comfyui/blob/main/hunyuan_dit_1.2.safetensors) |
+
+**Workflow Example**:
+
+![Hunyuan Example Workflow](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Hunyuan_8Mega_Pixel_image_upscale_process_with_tile_cn.png)
+
+---
+
+## **Star History**
 <a href="https://star-history.com/#TTPlanetPig/Comfyui_TTP_Toolset&Date">
  <picture>
    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=TTPlanetPig/Comfyui_TTP_Toolset&type=Date&theme=dark" />
@@ -80,4 +117,3 @@ and here is the workflow for example:
    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=TTPlanetPig/Comfyui_TTP_Toolset&type=Date" />
  </picture>
 </a>
-
