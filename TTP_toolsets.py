@@ -708,11 +708,30 @@ class TeaCacheHunyuanVideoSampler:
                     "sampler": ("SAMPLER", ),
                     "sigmas": ("SIGMAS", ),
                     "latent_image": ("LATENT", ),
-                    "speed": (["Original (1x)", "Fast (1.6x)", "Faster (2.1x)"], {
+                    "speed": (["Original (1x)", "Fast (1.6x)", "Faster (2.1x)", 
+                              "Very Fast (2.8x)", "Ultra Fast (3.5x)", 
+                              "Shapeless Fast (4.4x)"], {
                         "default": "Fast (1.6x)",
-                        "tooltips": "to balance the speed/quality select the fast or faster based on your demands"
+                        "tooltips": "Speed/quality trade-off:\nOriginal: Base quality\n" +
+                                   "Fast: 1.6x speedup\nFaster: 2.1x speedup\n" +
+                                   "Very Fast: 2.8x speedup (may reduce quality)\n" +
+                                   "Ultra Fast: 3.5x speedup (significant quality impact)\n" +
+                                   "Shapeless Fast: 4.4x speedup (extreme quality impact)"
                     }),
-                     }
+                    "enable_custom_speed": ("BOOLEAN", {
+                        "default": False,
+                        "label": "Enable Custom Speed",
+                        "tooltip": "Enable custom speed multiplier (overrides preset speeds)"
+                    }),
+                    "custom_speed": ("FLOAT", {
+                        "default": 1.0,
+                        "min": 1.0,
+                        "max": 4.4,
+                        "step": 0.1,
+                        "label": "Custom Speed Multiplier",
+                        "tooltip": "Custom speed multiplier (1.0x to 4.4x)"
+                    }),
+                    }
                 }
 
     RETURN_TYPES = ("LATENT", "LATENT")
@@ -720,138 +739,212 @@ class TeaCacheHunyuanVideoSampler:
     FUNCTION = "sample"
     CATEGORY = "TTP/custom_sampling"
 
+    def modulate(self, x, shift, scale):
+        """
+        改进的模块化调制函数
+        Args:
+            x: 输入张量
+            shift: 偏移参数
+            scale: 缩放参数
+        Returns:
+            调制后的张量
+        """
+        try:
+            # 确保数据类型和设备一致性
+            shift = shift.to(dtype=x.dtype, device=x.device)
+            scale = scale.to(dtype=x.dtype, device=x.device)
+            
+            # 获取批次大小
+            B = x.shape[0]
+            
+            # 根据输入维度调整shift和scale
+            if len(x.shape) == 3:  # [B, L, D]
+                shift = shift.view(B, 1, -1).expand(-1, x.shape[1], -1)
+                scale = scale.view(B, 1, -1).expand(-1, x.shape[1], -1)
+            elif len(x.shape) == 5:  # [B, C, T, H, W]
+                shift = shift.view(B, -1, 1, 1, 1).expand(-1, -1, x.shape[2], x.shape[3], x.shape[4])
+                scale = scale.view(B, -1, 1, 1, 1).expand(-1, -1, x.shape[2], x.shape[3], x.shape[4])
+            else:
+                raise ValueError(f"Unsupported input shape: {x.shape}")
+            
+            # 使用原地操作提高效率
+            result = x.mul_(1 + scale)
+            result.add_(shift)
+            
+            return result
+        except Exception as e:
+            raise RuntimeError(f"Modulation failed: {str(e)}")
+
     def patch_transformer_forward(self, transformer):
+        """改进的transformer forward方法补丁"""
         if not hasattr(transformer, 'original_forward'):
             transformer.original_forward = transformer.forward
 
         def teacache_forward(self, x, timesteps, context=None, control=None, transformer_options={}, **kwargs):
-            """
-            ComfyUI 的接口参数:
-            x: 输入张量
-            timesteps: 时间步
-            context: 文本条件
-            control: 控制参数
-            transformer_options: 转换器选项
-            """
             if not hasattr(self, 'enable_teacache') or not self.enable_teacache:
                 return self.original_forward(x, timesteps, context=context, 
                                           control=control, 
                                           transformer_options=transformer_options,
                                           **kwargs)
 
-            # 保存原始输入用于计算残差
-            original_input = x.clone()
+            try:
+                # 保存原始输入用于计算残差
+                original_input = x.clone()
 
-            # TeaCache 核心逻辑
-            should_calc = True
-            if self.cnt > 0 and self.cnt < self.num_steps - 1:
-                if hasattr(self, 'previous_modulated_input') and self.previous_modulated_input is not None:
-                    # 计算相对 L1 距离
-                    current_diff = (x - self.previous_modulated_input).abs().mean()
-                    current_magnitude = self.previous_modulated_input.abs().mean()
-                    rel_diff = (current_diff / current_magnitude).cpu().item()
-                    
-                    # 使用多项式重缩放
-                    coefficients = [7.33226126e+02, -4.01131952e+02, 6.75869174e+01, 
-                                  -3.14987800e+00, 9.61237896e-02]
-                    rescale_func = np.poly1d(coefficients)
-                    self.accumulated_rel_l1_distance += rescale_func(rel_diff)
-                    
-                    if self.accumulated_rel_l1_distance < self.rel_l1_thresh:
-                        should_calc = False
-                    else:
-                        self.accumulated_rel_l1_distance = 0
+                # TeaCache 核心逻辑
+                should_calc = True
+                if self.cnt > 0 and self.cnt < self.num_steps - 1:
+                    if hasattr(self, 'previous_modulated_input') and self.previous_modulated_input is not None:
+                        try:
+                            # 计算相对 L1 距离
+                            current_diff = (x - self.previous_modulated_input).abs().mean()
+                            current_magnitude = self.previous_modulated_input.abs().mean() + 1e-6  # 添加小量防止除零
+                            rel_diff = (current_diff / current_magnitude).cpu().item()
+                            
+                            # 使用多项式重缩放
+                            coefficients = [7.33226126e+02, -4.01131952e+02, 6.75869174e+01, 
+                                          -3.14987800e+00, 9.61237896e-02]
+                            rescale_func = np.poly1d(coefficients)
+                            self.accumulated_rel_l1_distance += rescale_func(rel_diff)
+                            
+                            if self.accumulated_rel_l1_distance < self.rel_l1_thresh:
+                                should_calc = False
+                            else:
+                                self.accumulated_rel_l1_distance = 0
+                        except Exception as e:
+                            print(f"L1 distance calculation failed: {str(e)}")
+                            should_calc = True
 
-            # 更新缓存状态
-            self.previous_modulated_input = x
-            self.cnt += 1
-            if self.cnt == self.num_steps:
-                self.cnt = 0
+                # 更新缓存状态
+                self.previous_modulated_input = x
+                self.cnt += 1
+                if self.cnt == self.num_steps:
+                    self.cnt = 0
 
-            # 根据判断决定是否使用缓存
-            if not should_calc and hasattr(self, 'previous_residual') and self.previous_residual is not None:
-                return original_input + self.previous_residual
+                # 根据判断决定是否使用缓存
+                if not should_calc and hasattr(self, 'previous_residual') and self.previous_residual is not None:
+                    return original_input + self.previous_residual
 
-            # 需要完整计算
-            result = self.original_forward(x, timesteps, context=context,
-                                         control=control,
-                                         transformer_options=transformer_options,
-                                         **kwargs)
-            
-            # 保存残差
-            self.previous_residual = result - original_input
-            return result
+                # 需要完整计算
+                result = self.original_forward(x, timesteps, context=context,
+                                            control=control,
+                                            transformer_options=transformer_options,
+                                            **kwargs)
+                
+                # 保存残差
+                self.previous_residual = result - original_input
+                return result
+
+            except Exception as e:
+                print(f"TeaCache forward failed: {str(e)}")
+                return self.original_forward(x, timesteps, context=context,
+                                          control=control,
+                                          transformer_options=transformer_options,
+                                          **kwargs)
 
         transformer.forward = teacache_forward.__get__(transformer)
 
-    def sample(self, noise, guider, sampler, sigmas, latent_image, speed):
-        # 设置阈值
-        thresh_map = {
-            "Original (1x)": 0.0,
-            "Fast (1.6x)": 0.1,
-            "Faster (2.1x)": 0.15
-        }
-        threshold = thresh_map[speed]
-
-        # 获取 transformer
-        transformer = guider.model_patcher.model.diffusion_model
-        
-        # 初始化 TeaCache
-        transformer.enable_teacache = True
-        transformer.cnt = 0
-        transformer.num_steps = len(sigmas)
-        transformer.rel_l1_thresh = threshold
-        transformer.accumulated_rel_l1_distance = 0
-        transformer.previous_modulated_input = None
-        transformer.previous_residual = None
-
-        # 替换 forward 方法
-        self.patch_transformer_forward(transformer)
-
+    def sample(self, noise, guider, sampler, sigmas, latent_image, speed, enable_custom_speed=False, custom_speed=1.0):
+        """改进的采样实现"""
         try:
-            # 处理 latent
-            latent = latent_image.copy()
-            latent_image = latent["samples"]
-            latent_image = comfy.sample.fix_empty_latent_channels(guider.model_patcher, latent_image)
-            latent["samples"] = latent_image
-
-            noise_mask = latent.get("noise_mask", None)
-
-            # 采样回调
-            x0_output = {}
-            callback = latent_preview.prepare_callback(guider.model_patcher, sigmas.shape[-1] - 1, x0_output)
-
-            # 执行采样
-            disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
-            samples = guider.sample(
-                noise.generate_noise(latent),
-                latent_image,
-                sampler,
-                sigmas,
-                denoise_mask=noise_mask,
-                callback=callback,
-                disable_pbar=disable_pbar,
-                seed=noise.seed
-            )
-            samples = samples.to(comfy.model_management.intermediate_device())
-
-            # 处理输出
-            out = latent.copy()
-            out["samples"] = samples
-            if "x0" in x0_output:
-                out_denoised = latent.copy()
-                out_denoised["samples"] = guider.model_patcher.model.process_latent_out(x0_output["x0"].cpu())
+            # 根据是否启用自定义速度来决定使用哪个阈值
+            if enable_custom_speed:
+                threshold = self.calculate_threshold(custom_speed)
             else:
-                out_denoised = out
+                # 预设速度的阈值映射
+                thresh_map = {
+                    "Original (1x)": 0.0,
+                    "Fast (1.6x)": 0.1,
+                    "Faster (2.1x)": 0.15,
+                    "Very Fast (2.8x)": 0.2,
+                    "Ultra Fast (3.5x)": 0.25,
+                    "Shapeless Fast (4.4x)": 0.35
+                }
+                threshold = thresh_map[speed]
 
-            return (out, out_denoised)
+            # 获取 transformer
+            transformer = guider.model_patcher.model.diffusion_model
+            
+            # 初始化 TeaCache
+            transformer.enable_teacache = True
+            transformer.cnt = 0
+            transformer.num_steps = len(sigmas)
+            transformer.rel_l1_thresh = threshold
+            transformer.accumulated_rel_l1_distance = 0
+            transformer.previous_modulated_input = None
+            transformer.previous_residual = None
 
-        finally:
-            # 恢复原始 forward 方法
-            if hasattr(transformer, 'original_forward'):
-                transformer.forward = transformer.original_forward
-            transformer.enable_teacache = False
+            # 替换 forward 方法
+            self.patch_transformer_forward(transformer)
+
+            try:
+                # 处理 latent
+                latent = latent_image.copy()
+                latent_image = latent["samples"]
+                latent_image = comfy.sample.fix_empty_latent_channels(guider.model_patcher, latent_image)
+                latent["samples"] = latent_image
+
+                noise_mask = latent.get("noise_mask", None)
+
+                # 采样回调
+                x0_output = {}
+                callback = latent_preview.prepare_callback(guider.model_patcher, sigmas.shape[-1] - 1, x0_output)
+
+                # 执行采样
+                disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
+                samples = guider.sample(
+                    noise.generate_noise(latent),
+                    latent_image,
+                    sampler,
+                    sigmas,
+                    denoise_mask=noise_mask,
+                    callback=callback,
+                    disable_pbar=disable_pbar,
+                    seed=noise.seed
+                )
+                samples = samples.to(comfy.model_management.intermediate_device())
+
+                # 处理输出
+                out = latent.copy()
+                out["samples"] = samples
+                if "x0" in x0_output:
+                    out_denoised = latent.copy()
+                    out_denoised["samples"] = guider.model_patcher.model.process_latent_out(x0_output["x0"].cpu())
+                else:
+                    out_denoised = out
+
+                return (out, out_denoised)
+
+            finally:
+                # 恢复原始 forward 方法
+                if hasattr(transformer, 'original_forward'):
+                    transformer.forward = transformer.original_forward
+                transformer.enable_teacache = False
+
+        except Exception as e:
+            print(f"Sampling failed: {str(e)}")
+            raise
+
+    def calculate_threshold(self, speed_multiplier):
+        """
+        计算给定速度倍数对应的阈值
+        使用指数衰减模型计算更准确的阈值
+        """
+        if speed_multiplier <= 1.0:
+            return 0.0
         
+        import math
+        
+        # 拟合参数
+        a = 0.45  # 最大阈值渐近线
+        b = 0.5   # 增长率参数
+        
+        # 计算阈值
+        threshold = a * (1 - math.exp(-b * (speed_multiplier - 1)))
+        
+        # 限制最大阈值
+        return min(threshold, 0.35)
+
 NODE_CLASS_MAPPINGS = {
     "TTPlanet_Tile_Preprocessor_Simple": TTPlanet_Tile_Preprocessor_Simple,
     "TTP_Image_Tile_Batch": TTP_Image_Tile_Batch,
