@@ -784,14 +784,14 @@ class TeaCacheHunyuanVideoSampler:
 
         transformer.forward = teacache_forward.__get__(transformer)
 
-    def sample(self, noise, guider, sampler, sigmas, latent_image, speedup):
+    def sample(self, noise, guider, sampler, sigmas, latent_image, speed):
         # 设置阈值
         thresh_map = {
             "Original (1x)": 0.0,
             "Fast (1.6x)": 0.1,
             "Faster (2.1x)": 0.15
         }
-        threshold = thresh_map[speedup]
+        threshold = thresh_map[speed]
 
         # 获取 transformer
         transformer = guider.model_patcher.model.diffusion_model
