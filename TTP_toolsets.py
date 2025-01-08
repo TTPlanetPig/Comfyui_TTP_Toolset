@@ -3,6 +3,11 @@ import numpy as np
 from PIL import Image, ImageFilter, ImageChops, ImageEnhance
 import node_helpers
 import torch
+import comfy.model_management
+import comfy.samplers
+import comfy.sample
+import comfy.utils
+import latent_preview
 
 def pil2tensor(image: Image) -> torch.Tensor:
     return torch.from_numpy(np.array(image).astype(np.float32) / 255.0).unsqueeze(0)
@@ -693,6 +698,159 @@ class TTP_text_mix:
         final_text = template.replace("{text1}", text1).replace("{text2}", text2).replace("{text3}", text3)
 
         return (text1, text2, text3, final_text)
+
+class TeaCacheHunyuanVideoSampler:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required":
+                    {"noise": ("NOISE", ),
+                    "guider": ("GUIDER", ),
+                    "sampler": ("SAMPLER", ),
+                    "sigmas": ("SIGMAS", ),
+                    "latent_image": ("LATENT", ),
+                    "speed": (["Original (1x)", "Fast (1.6x)", "Faster (2.1x)"], {
+                        "default": "Fast (1.6x)",
+                        "tooltips": "to balance the speed/quality select the fast or faster based on your demands"
+                    }),
+                     }
+                }
+
+    RETURN_TYPES = ("LATENT", "LATENT")
+    RETURN_NAMES = ("output", "denoised_output")
+    FUNCTION = "sample"
+    CATEGORY = "TTP/custom_sampling"
+
+    def patch_transformer_forward(self, transformer):
+        if not hasattr(transformer, 'original_forward'):
+            transformer.original_forward = transformer.forward
+
+        def teacache_forward(self, x, timesteps, context=None, control=None, transformer_options={}, **kwargs):
+            """
+            ComfyUI 的接口参数:
+            x: 输入张量
+            timesteps: 时间步
+            context: 文本条件
+            control: 控制参数
+            transformer_options: 转换器选项
+            """
+            if not hasattr(self, 'enable_teacache') or not self.enable_teacache:
+                return self.original_forward(x, timesteps, context=context, 
+                                          control=control, 
+                                          transformer_options=transformer_options,
+                                          **kwargs)
+
+            # 保存原始输入用于计算残差
+            original_input = x.clone()
+
+            # TeaCache 核心逻辑
+            should_calc = True
+            if self.cnt > 0 and self.cnt < self.num_steps - 1:
+                if hasattr(self, 'previous_modulated_input') and self.previous_modulated_input is not None:
+                    # 计算相对 L1 距离
+                    current_diff = (x - self.previous_modulated_input).abs().mean()
+                    current_magnitude = self.previous_modulated_input.abs().mean()
+                    rel_diff = (current_diff / current_magnitude).cpu().item()
+                    
+                    # 使用多项式重缩放
+                    coefficients = [7.33226126e+02, -4.01131952e+02, 6.75869174e+01, 
+                                  -3.14987800e+00, 9.61237896e-02]
+                    rescale_func = np.poly1d(coefficients)
+                    self.accumulated_rel_l1_distance += rescale_func(rel_diff)
+                    
+                    if self.accumulated_rel_l1_distance < self.rel_l1_thresh:
+                        should_calc = False
+                    else:
+                        self.accumulated_rel_l1_distance = 0
+
+            # 更新缓存状态
+            self.previous_modulated_input = x
+            self.cnt += 1
+            if self.cnt == self.num_steps:
+                self.cnt = 0
+
+            # 根据判断决定是否使用缓存
+            if not should_calc and hasattr(self, 'previous_residual') and self.previous_residual is not None:
+                return original_input + self.previous_residual
+
+            # 需要完整计算
+            result = self.original_forward(x, timesteps, context=context,
+                                         control=control,
+                                         transformer_options=transformer_options,
+                                         **kwargs)
+            
+            # 保存残差
+            self.previous_residual = result - original_input
+            return result
+
+        transformer.forward = teacache_forward.__get__(transformer)
+
+    def sample(self, noise, guider, sampler, sigmas, latent_image, speedup):
+        # 设置阈值
+        thresh_map = {
+            "Original (1x)": 0.0,
+            "Fast (1.6x)": 0.1,
+            "Faster (2.1x)": 0.15
+        }
+        threshold = thresh_map[speedup]
+
+        # 获取 transformer
+        transformer = guider.model_patcher.model.diffusion_model
+        
+        # 初始化 TeaCache
+        transformer.enable_teacache = True
+        transformer.cnt = 0
+        transformer.num_steps = len(sigmas)
+        transformer.rel_l1_thresh = threshold
+        transformer.accumulated_rel_l1_distance = 0
+        transformer.previous_modulated_input = None
+        transformer.previous_residual = None
+
+        # 替换 forward 方法
+        self.patch_transformer_forward(transformer)
+
+        try:
+            # 处理 latent
+            latent = latent_image.copy()
+            latent_image = latent["samples"]
+            latent_image = comfy.sample.fix_empty_latent_channels(guider.model_patcher, latent_image)
+            latent["samples"] = latent_image
+
+            noise_mask = latent.get("noise_mask", None)
+
+            # 采样回调
+            x0_output = {}
+            callback = latent_preview.prepare_callback(guider.model_patcher, sigmas.shape[-1] - 1, x0_output)
+
+            # 执行采样
+            disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
+            samples = guider.sample(
+                noise.generate_noise(latent),
+                latent_image,
+                sampler,
+                sigmas,
+                denoise_mask=noise_mask,
+                callback=callback,
+                disable_pbar=disable_pbar,
+                seed=noise.seed
+            )
+            samples = samples.to(comfy.model_management.intermediate_device())
+
+            # 处理输出
+            out = latent.copy()
+            out["samples"] = samples
+            if "x0" in x0_output:
+                out_denoised = latent.copy()
+                out_denoised["samples"] = guider.model_patcher.model.process_latent_out(x0_output["x0"].cpu())
+            else:
+                out_denoised = out
+
+            return (out, out_denoised)
+
+        finally:
+            # 恢复原始 forward 方法
+            if hasattr(transformer, 'original_forward'):
+                transformer.forward = transformer.original_forward
+            transformer.enable_teacache = False
         
 NODE_CLASS_MAPPINGS = {
     "TTPlanet_Tile_Preprocessor_Simple": TTPlanet_Tile_Preprocessor_Simple,
@@ -704,18 +862,20 @@ NODE_CLASS_MAPPINGS = {
     "TTP_Tile_image_size": Tile_imageSize,
     "TTP_condsetarea_merge_test": TTP_condsetarea_merge_test,
     "TTP_Expand_And_Mask": TTP_Expand_And_Mask,
-    "TTP_text_mix": TTP_text_mix
+    "TTP_text_mix": TTP_text_mix,
+    "TeaCacheHunyuanVideoSampler": TeaCacheHunyuanVideoSampler
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "TTPlanet_Tile_Preprocessor_Simple": "�TTP Tile Preprocessor Simple",
-    "TTP_Image_Tile_Batch": "�TTP_Image_Tile_Batch",
-    "TTP_Image_Assy": "�TTP_Image_Assy",
-    "TTP_CoordinateSplitter": "�TTP_CoordinateSplitter",
-    "TTP_condtobatch": "�TTP_cond to batch",
-    "TTP_condsetarea_merge": "�TTP_condsetarea_merge",
-    "TTP_Tile_image_size": "�TTP_Tile_image_size",
+    "TTPlanet_Tile_Preprocessor_Simple": "TTP Tile Preprocessor Simple",
+    "TTP_Image_Tile_Batch": "TTP_Image_Tile_Batch",
+    "TTP_Image_Assy": "TTP_Image_Assy",
+    "TTP_CoordinateSplitter": "TTP_CoordinateSplitter",
+    "TTP_condtobatch": "TTP_cond to batch",
+    "TTP_condsetarea_merge": "TTP_condsetarea_merge",
+    "TTP_Tile_image_size": "TTP_Tile_image_size",
     "TTP_condsetarea_merge_test": "TTP_condsetarea_merge_test",
     "TTP_Expand_And_Mask": "TTP_Expand_And_Mask",
-    "TTP_text_mix": "TTP_text_mix"
+    "TTP_text_mix": "TTP_text_mix",
+    "TeaCacheHunyuanVideoSampler": "TTP_TeaCache HunyuanVideo Sampler"
 }
