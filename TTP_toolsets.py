@@ -775,38 +775,6 @@ def modulate(x, shift, scale):
     except Exception as e:
         raise RuntimeError(f"Modulation failed: {str(e)}")
 
-def modulate(x, shift, scale):
-    """Modulate layer implementation for HunyuanVideo"""
-    try:
-        # Ensure consistent data types
-        shift = shift.to(dtype=x.dtype, device=x.device)
-        scale = scale.to(dtype=x.dtype, device=x.device)
-        
-        # Reshape shift and scale to match x dimensions
-        B = x.shape[0]  # batch size
-        
-        if len(x.shape) == 3:  # [B, L, D]
-            shift = shift.view(B, 1, -1)  # [B, 1, D]
-            scale = scale.view(B, 1, -1)  # [B, 1, D]
-            shift = shift.expand(-1, x.shape[1], -1)  # [B, L, D]
-            scale = scale.expand(-1, x.shape[1], -1)  # [B, L, D]
-        elif len(x.shape) == 5:  # [B, C, T, H, W]
-            shift = shift.view(B, -1, 1, 1, 1)  # [B, C, 1, 1, 1]
-            scale = scale.view(B, -1, 1, 1, 1)  # [B, C, 1, 1, 1]
-            shift = shift.expand(-1, -1, x.shape[2], x.shape[3], x.shape[4])  # [B, C, T, H, W]
-            scale = scale.expand(-1, -1, x.shape[2], x.shape[3], x.shape[4])  # [B, C, T, H, W]
-        else:
-            raise ValueError(f"Unsupported input shape: {x.shape}")
-        
-        # Step-by-step calculation to reduce memory usage
-        result = x.mul_(1 + scale)  # in-place operation
-        result.add_(shift)  # in-place operation
-        
-        return result
-        
-    except Exception as e:
-        raise RuntimeError(f"Modulation failed: {str(e)}")
-
 class TeaCacheHunyuanVideoSampler:
     @classmethod 
     def INPUT_TYPES(cls):
