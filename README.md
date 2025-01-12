@@ -22,7 +22,11 @@ Thanks to the contributions from the TeaCache code repository ([ali-vilab/TeaCac
 - **Precision Support:**
   Supports `bf16` and `fp8`.
   
-  ![image](https://github.com/user-attachments/assets/0550900c-e54f-4c5f-9c8d-c6651d7e7930)
+![image](https://github.com/user-attachments/assets/9e890a64-7502-4e1f-8739-15748efc1768)
+
+
+https://github.com/user-attachments/assets/af06b9d3-9c84-4a83-ba90-eb4ec4bb2e99
+
 
 ---
 
