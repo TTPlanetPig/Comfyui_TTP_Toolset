@@ -15,6 +15,12 @@ def pil2tensor(image: Image) -> torch.Tensor:
 
 def tensor2pil(t_image: torch.Tensor) -> Image:
     return Image.fromarray(np.clip(255.0 * t_image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
+    
+def apply_gaussian_blur(image_np, ksize=5, sigmaX=1.0):
+    if ksize % 2 == 0:
+        ksize += 1  # ksize must be odd
+    blurred_image = cv2.GaussianBlur(image_np, (ksize, ksize), sigmaX=sigmaX)
+    return blurred_image
 
         
 class TTPlanet_Tile_Preprocessor_Simple:
