@@ -96,7 +96,7 @@ class TTP_Image_Tile_Batch:
         img_width, img_height = image.size
 
         if img_width <= tile_width and img_height <= tile_height:
-            return ([pil2tensor(image).unsqueeze(0)], [(0, 0, img_width, img_height)], (img_width, img_height), (1, 1))
+            return (pil2tensor(image), [(0, 0, img_width, img_height)], (img_width, img_height), (1, 1))
 
         def calculate_step(size, tile_size):
             if size <= tile_size:
@@ -472,26 +472,37 @@ class Tile_imageSize:
     def image_width_height(self, image, width_factor, height_factor, overlap_rate):
         _, raw_H, raw_W, _ = image.shape
         if overlap_rate == 0:
-            tile_width = int(raw_W / width_factor)
-            tile_height = int(raw_H / height_factor)
-            # 验证 tile_width 和 tile_height 是否可以被8整除
-            if tile_width % 8 != 0:
-                tile_width = ((tile_width + 7) // 8) * 8
-            if tile_height % 8 != 0:
-                tile_height = ((tile_height + 7) // 8) * 8
-        
+            # 水平方向
+            if width_factor == 1:
+                tile_width = raw_W
+            else:
+                tile_width = int(raw_W / width_factor)
+                if tile_width % 8 != 0:
+                    tile_width = ((tile_width + 7) // 8) * 8
+            # 垂直方向
+            if height_factor == 1:
+                tile_height = raw_H
+            else:
+                tile_height = int(raw_H / height_factor)
+                if tile_height % 8 != 0:
+                    tile_height = ((tile_height + 7) // 8) * 8
+
         else:
-            # 使用正确的公式计算 tile_width 和 tile_height
-            tile_width = int(raw_W / (1 + (width_factor - 1) * (1 - overlap_rate)))
-            tile_height = int(raw_H / (1 + (height_factor - 1) * (1 - overlap_rate)))
+            # 水平方向
+            if width_factor == 1:
+                tile_width = raw_W
+            else:
+                tile_width = int(raw_W / (1 + (width_factor - 1) * (1 - overlap_rate)))
+                if tile_width % 8 != 0:
+                    tile_width = (tile_width // 8) * 8
+            # 垂直方向
+            if height_factor == 1:
+                tile_height = raw_H
+            else:
+                tile_height = int(raw_H / (1 + (height_factor - 1) * (1 - overlap_rate)))
+                if tile_height % 8 != 0:
+                    tile_height = (tile_height // 8) * 8
 
-            # 验证 tile_width 和 tile_height 是否可以被8整除
-            if tile_width % 8 != 0:
-                tile_width = (tile_width // 8) * 8
-            if tile_height % 8 != 0:
-                tile_height = (tile_height // 8) * 8
-
-        # 返回结果
         return (tile_width, tile_height)
         
 class TTP_Expand_And_Mask:
@@ -502,7 +513,7 @@ class TTP_Expand_And_Mask:
     1. 支持同时在多个方向上扩展图像。
     2. 分别控制每个方向的扩展块数量。
     3. 将输入图像的透明通道（Alpha 通道）信息转换为蒙版，并与新创建的蒙版合并。
-    4. 添加一个布尔参数 fill_alpha_decision 来决定是否将输出图片中的透明区域填充为白色，并输出 RGB 图像。
+    4. 添加一个布尔参数 fill_alpha_decision 来决定是否将输出图片中的透明区域填充为指定颜色，并输出 RGB 图像。
     """
     def __init__(self, *args, **kwargs):
         pass
@@ -514,9 +525,8 @@ class TTP_Expand_And_Mask:
             "required": {
                 "image": ("IMAGE",),  # 输入一张图片
                 "fill_mode": (["duplicate", "white"], {"default": "duplicate", "label": "Fill Mode"}),
-                # fill_mode是一个字符串列表参数，可以选择"duplicate"或"white"
-                "fill_alpha_decision": ("BOOLEAN", {"default": False, "label": "Fill Alpha with White"}),
-                # fill_alpha_decision为一个布尔值参数，用来决定是否将输出图像透明区域填充为白色
+                "fill_alpha_decision": ("BOOLEAN", {"default": False, "label": "Fill Alpha with Color"}),
+                "fill_color": ("STRING", {"default": "#7F7F7F", "label": "Fill Color"}),
             },
             "optional": {
                 **{f"expand_{dir}": ("BOOLEAN", {"default": False, "label": f"Expand {dir.capitalize()}"}) for dir in directions},
@@ -529,7 +539,26 @@ class TTP_Expand_And_Mask:
     FUNCTION = "expand_and_mask"
     CATEGORY = "TTP/Image"
 
-    def expand_and_mask(self, image, fill_mode="duplicate", fill_alpha_decision=False, **kwargs):
+    def hex_to_rgba(self, hex_color):
+        # 去除可能存在的 '#' 字符
+        hex_color = hex_color.lstrip('#')
+        # 如果为6位十六进制字符串，默认为不透明
+        if len(hex_color) == 6:
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+            return (r, g, b, 255)
+        # 如果为8位，则最后两位为透明度
+        elif len(hex_color) == 8:
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+            a = int(hex_color[6:8], 16)
+            return (r, g, b, a)
+        else:
+            raise ValueError("Invalid hex color format")
+
+    def expand_and_mask(self, image, fill_mode="duplicate", fill_alpha_decision=False, fill_color="#7F7F7F", **kwargs):
         pil_image = tensor2pil(image)
         orig_width, orig_height = pil_image.size
         has_alpha = (pil_image.mode == 'RGBA')
@@ -668,10 +697,12 @@ class TTP_Expand_And_Mask:
         # 创建蒙版张量 (1, 1, height, width)
         mask_tensor = torch.from_numpy(mask_array).unsqueeze(0).unsqueeze(0)
 
-        # 根据 fill_alpha_decision 参数决定是否将输出图像中的透明区域填充为白色
+        # 根据 fill_alpha_decision 参数决定是否将输出图像中的透明区域填充为指定颜色
         if fill_alpha_decision and has_alpha:
             expanded_image = expanded_image.convert('RGBA')  # 确保图像是RGBA模式
-            background = Image.new('RGBA', expanded_image.size, (255, 255, 255, 255)) 
+            # 使用自定义填充颜色代替纯白色
+            fill_rgba = self.hex_to_rgba(fill_color)
+            background = Image.new('RGBA', expanded_image.size, fill_rgba)
             expanded_image = Image.alpha_composite(background, expanded_image)
             expanded_image = expanded_image.convert('RGB')  # 转换为RGB模式
             expanded_image_mode = 'RGB'
