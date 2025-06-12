@@ -46,6 +46,8 @@ class TTP_Smart_Tile_Batch:
         tiles: List[torch.Tensor] = []
         infos: List = []
         ids: List[int] = []
+        max_w = 0
+        max_h = 0
 
         boxes = result.boxes.xyxy.cpu().numpy().astype(int)
         classes = result.boxes.cls.cpu().numpy().astype(int)
@@ -61,15 +63,29 @@ class TTP_Smart_Tile_Batch:
             x2 = min(width, x2 + padding)
             y2 = min(height, y2 + padding)
             tile = pil_img.crop((x1, y1, x2, y2))
-            tiles.append(pil2tensor(tile))
+            tile_tensor = pil2tensor(tile)
+            _, h, w, _ = tile_tensor.shape
+            max_h = max(max_h, h)
+            max_w = max(max_w, w)
+            tiles.append(tile_tensor)
             if masks is not None:
                 mask = masks[idx][y1:y2, x1:x2]
-                infos.append(torch.from_numpy(mask).unsqueeze(0))
+                infos.append((x1, y1, x2, y2, torch.from_numpy(mask).unsqueeze(0)))
             else:
                 infos.append((x1, y1, x2, y2))
             ids.append(int(classes[idx]))
 
-        tiles_tensor = torch.stack(tiles, dim=0).squeeze(1) if tiles else torch.empty((0, 3, 0, 0))
+        padded_tiles = []
+        for tile in tiles:
+            _, h, w, _ = tile.shape
+            pad_w = max_w - w
+            pad_h = max_h - h
+            if pad_w or pad_h:
+                tile_chw = tile.permute(0, 3, 1, 2)
+                tile_chw = torch.nn.functional.pad(tile_chw, (0, pad_w, 0, pad_h))
+                tile = tile_chw.permute(0, 2, 3, 1)
+            padded_tiles.append(tile)
+        tiles_tensor = torch.cat(padded_tiles, dim=0) if padded_tiles else torch.empty((0, max_h, max_w, 3))
         return tiles_tensor, infos, ids
 
 
@@ -97,15 +113,15 @@ class TTP_Smart_Image_Assy:
         for idx, tile in enumerate(tiles):
             tile_img = tensor2pil(tile.unsqueeze(0))
             info = infos[idx]
-            if task == "segment" and not isinstance(info, tuple):
-                mask = tensor2pil(info)
-                bbox = mask.getbbox()
-                if bbox:
-                    x1, y1, x2, y2 = bbox
-                    mask_resized = mask.crop(bbox)
-                    tile_crop = tile_img.crop((0, 0, x2 - x1, y2 - y1))
-                    canvas.paste(tile_crop, (x1, y1, x2, y2), mask_resized)
+            if task == "segment":
+                x1, y1, x2, y2, mask_tensor = info
+                width, height = x2 - x1, y2 - y1
+                tile_crop = tile_img.crop((0, 0, width, height))
+                mask = tensor2pil(mask_tensor)
+                canvas.paste(tile_crop, (x1, y1, x2, y2), mask)
             else:
                 x1, y1, x2, y2 = info
-                canvas.paste(tile_img, (x1, y1, x2, y2))
+                width, height = x2 - x1, y2 - y1
+                tile_crop = tile_img.crop((0, 0, width, height))
+                canvas.paste(tile_crop, (x1, y1, x2, y2))
         return pil2tensor(canvas)
