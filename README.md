@@ -113,6 +113,17 @@ Bounding boxes should be provided as `[x1, y1, x2, y2]` coordinates.
 
 See `examples/smart_tile_example.json` for a minimal workflow using these nodes.
 
+You can also draw bounding boxes interactively using `manual_crop_tool.py`:
+
+```bash
+python manual_crop_tool.py input.jpg output_dir --tile-size 512
+```
+
+Draw rectangles on the displayed image. Press `q` when finished. The script saves
+all tiles to `output_dir` and writes `boxes.json` containing the coordinates.
+Large selections are automatically split into smaller tiles using the specified
+tile size.
+
 ---
 
 ## **Examples**
