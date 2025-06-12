@@ -14,14 +14,14 @@
       "type": "TTP_Smart_Tile_Batch",
       "pos": [250, 0],
       "size": [250, 120],
-      "widgets_values": ["yolov8n-seg.pt", "detect", 0.25, 0.45, 10]
+      "widgets_values": [[ [10, 10, 110, 110], [130, 130, 220, 220] ]]
     },
     {
       "id": 3,
       "type": "TTP_Smart_Image_Assy",
       "pos": [500, 0],
       "size": [250, 120],
-      "widgets_values": ["detect"]
+      "widgets_values": []
     }
   ],
   "links": [
