@@ -106,6 +106,20 @@ This node merges all tiled conditions into one and prepares them for building th
 ![Condition Merge Node](https://github.com/user-attachments/assets/3039c8a3-8284-4b71-a9de-4120723258c7)
 
 ---
+### **7. Smart Tile Nodes**
+These nodes allow object-aware tiling using a YOLO detection or segmentation model. Use **TTP Smart Tile Batch** to crop detected regions and **TTP Smart Image Assy** to paste the edited tiles back.
+
+`TTP Smart Tile Batch` now accepts an optional *padding* value to expand bounding boxes before cropping.
+
+The nodes depend on the `ultralytics` package:
+
+```bash
+pip install ultralytics
+```
+
+See `examples/smart_tile_example.json` for a minimal workflow using these nodes.
+
+---
 
 ## **Examples**
 
@@ -116,6 +130,9 @@ This node merges all tiled conditions into one and prepares them for building th
 ### **Latent Example**
 
 ![Latent Example Workflow](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Flux_8Mega_Pixel_image_upscale_process.png)
+### **Smart Tile Example**
+`examples/smart_tile_example.json` demonstrates object-aware tiling and recombination.
+
 
 ---
 
