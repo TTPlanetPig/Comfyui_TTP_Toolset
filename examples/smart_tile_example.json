@@ -1,0 +1,32 @@
+{
+  "last_node_id": 4,
+  "last_link_id": 4,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "ImageInput",
+      "pos": [0, 0],
+      "size": [210, 70],
+      "widgets_values": ["input.png"]
+    },
+    {
+      "id": 2,
+      "type": "TTP_Smart_Tile_Batch",
+      "pos": [250, 0],
+      "size": [250, 120],
+      "widgets_values": [[ [10, 10, 110, 110], [130, 130, 220, 220] ]]
+    },
+    {
+      "id": 3,
+      "type": "TTP_Smart_Image_Assy",
+      "pos": [500, 0],
+      "size": [250, 120],
+      "widgets_values": []
+    }
+  ],
+  "links": [
+    [1, 0, 2, 0],
+    [2, 0, 3, 1],
+    [2, 1, 3, 2]
+  ]
+}

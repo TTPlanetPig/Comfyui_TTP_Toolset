@@ -106,6 +106,25 @@ This node merges all tiled conditions into one and prepares them for building th
 ![Condition Merge Node](https://github.com/user-attachments/assets/3039c8a3-8284-4b71-a9de-4120723258c7)
 
 ---
+### **7. Manual Tile Nodes**
+Use **TTP Smart Tile Batch** to crop arbitrary regions defined by a list of bounding boxes. After processing the tiles with any other ComfyUI nodes, **TTP Smart Image Assy** pastes them back in place.
+
+Bounding boxes should be provided as `[x1, y1, x2, y2]` coordinates.
+
+See `examples/smart_tile_example.json` for a minimal workflow using these nodes.
+
+You can also draw bounding boxes interactively using `manual_crop_tool.py`:
+
+```bash
+python manual_crop_tool.py input.jpg output_dir --tile-size 512
+```
+
+Draw rectangles on the displayed image. Press `q` when finished. The script saves
+all tiles to `output_dir` and writes `boxes.json` containing the coordinates.
+Large selections are automatically split into smaller tiles using the specified
+tile size.
+
+---
 
 ## **Examples**
 
@@ -116,6 +135,9 @@ This node merges all tiled conditions into one and prepares them for building th
 ### **Latent Example**
 
 ![Latent Example Workflow](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Flux_8Mega_Pixel_image_upscale_process.png)
+### **Smart Tile Example**
+`examples/smart_tile_example.json` demonstrates manual tiling and recombination.
+
 
 ---
 
