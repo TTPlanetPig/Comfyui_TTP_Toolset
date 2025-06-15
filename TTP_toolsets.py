@@ -1099,6 +1099,48 @@ class TeaCacheHunyuanVideoSampler:
         except Exception as e:
             raise RuntimeError(f"Sampling failed: {str(e)}")
 
+
+class TTP_Iterative_Upscale:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "iterations": ("INT", {"default": 1, "min": 1, "max": 10, "step": 1}),
+                "scale_factor": ("FLOAT", {"default": 2.0, "min": 1.0, "max": 4.0, "step": 0.05}),
+            },
+            "optional": {
+                "crop_x": ("INT", {"default": 0, "min": 0}),
+                "crop_y": ("INT", {"default": 0, "min": 0}),
+                "crop_width": ("INT", {"default": 0, "min": 0}),
+                "crop_height": ("INT", {"default": 0, "min": 0}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("IMAGE",)
+    FUNCTION = "iter_upscale"
+    CATEGORY = "TTP/Image"
+
+    def iter_upscale(self, image, iterations=1, scale_factor=2.0, crop_x=0, crop_y=0, crop_width=0, crop_height=0):
+        pil_img = tensor2pil(image)
+
+        for _ in range(iterations):
+            if crop_width > 0 and crop_height > 0:
+                left = max(0, crop_x)
+                top = max(0, crop_y)
+                right = min(pil_img.width, crop_x + crop_width)
+                bottom = min(pil_img.height, crop_y + crop_height)
+                pil_img = pil_img.crop((left, top, right, bottom))
+
+            new_size = (int(pil_img.width * scale_factor), int(pil_img.height * scale_factor))
+            pil_img = pil_img.resize(new_size, Image.LANCZOS)
+
+        return (pil2tensor(pil_img),)
+
 NODE_CLASS_MAPPINGS = {
     "TTPlanet_Tile_Preprocessor_Simple": TTPlanet_Tile_Preprocessor_Simple,
     "TTP_Image_Tile_Batch": TTP_Image_Tile_Batch,
@@ -1109,6 +1151,7 @@ NODE_CLASS_MAPPINGS = {
     "TTP_Tile_image_size": Tile_imageSize,
     "TTP_condsetarea_merge_test": TTP_condsetarea_merge_test,
     "TTP_Expand_And_Mask": TTP_Expand_And_Mask,
+    "TTP_Iterative_Upscale": TTP_Iterative_Upscale,
     "TTP_text_mix": TTP_text_mix,
     "TeaCacheHunyuanVideoSampler": TeaCacheHunyuanVideoSampler
 }
@@ -1123,6 +1166,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TTP_Tile_image_size": "TTP_Tile_image_size",
     "TTP_condsetarea_merge_test": "TTP_condsetarea_merge_test",
     "TTP_Expand_And_Mask": "TTP_Expand_And_Mask",
+    "TTP_Iterative_Upscale": "TTP_Iterative_Upscale",
     "TTP_text_mix": "TTP_text_mix",
     "TeaCacheHunyuanVideoSampler": "TTP_TeaCache HunyuanVideo Sampler"
 }

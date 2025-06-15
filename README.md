@@ -107,6 +107,19 @@ This node merges all tiled conditions into one and prepares them for building th
 
 ---
 
+### **7. Iterative Upscale Node**
+This node crops and upscales an image multiple times. Use it together with **TTP_Expand_And_Mask** to create an infinite zoom effect.
+
+| Parameter | Description |
+|-----------|-------------|
+| **Iterations** | Number of upscale cycles. |
+| **Scale Factor** | Factor used for each upscale step. |
+| **Crop X/Y/Width/Height** | Optional region to crop before scaling. |
+
+**Example Chain**: `TTP_Expand_And_Mask → TTP_Iterative_Upscale` (repeat as needed)
+
+---
+
 ## **Examples**
 
 ### **Pixel Example (Recommended)**
