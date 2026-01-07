@@ -57,18 +57,6 @@ class LTXVFirstLastFrameControl_TTP(io.ComfyNode):
                     step=0.05,
                     tooltip="尾帧嵌入强度 (1.0=完全替换, 0.0=不嵌入)"
                 ),
-                io.Int.Input(
-                    "blend_frames", 
-                    default=3, 
-                    min=0, 
-                    max=10,
-                    tooltip="羽化过渡帧数 (0=无过渡, 建议3-5)"
-                ),
-                io.Boolean.Input(
-                    "bypass", 
-                    default=False, 
-                    tooltip="跳过处理，直接输出原latent"
-                )
             ],
             outputs=[
                 io.Latent.Output(display_name="latent"),
@@ -83,9 +71,7 @@ class LTXVFirstLastFrameControl_TTP(io.ComfyNode):
         first_image=None, 
         last_image=None,
         first_strength=1.0, 
-        last_strength=1.0, 
-        blend_frames=3,
-        bypass=False
+        last_strength=1.0
     ) -> io.NodeOutput:
         """
         执行首尾帧控制
@@ -97,17 +83,11 @@ class LTXVFirstLastFrameControl_TTP(io.ComfyNode):
             last_image: 尾帧图像(可选)
             first_strength: 首帧强度
             last_strength: 尾帧强度
-            blend_frames: 羽化过渡帧数
-            bypass: 是否跳过处理
             
         Returns:
             包含处理后latent和noise_mask的字典
         """
-        # Bypass模式：直接返回原latent
-        if bypass:
-            return io.NodeOutput(latent)
-        
-        # 如果没有提供任何图像，也直接返回
+        # 如果没有提供任何图像，直接返回
         if first_image is None and last_image is None:
             return io.NodeOutput(latent)
         
@@ -137,16 +117,6 @@ class LTXVFirstLastFrameControl_TTP(io.ComfyNode):
             
             # 设置首帧的noise_mask (1.0 - strength 表示保留多少噪声)
             noise_mask[:, :, :first_latent_frames] = 1.0 - first_strength
-            
-            # 羽化过渡
-            if blend_frames > 0:
-                cls._apply_blend(
-                    noise_mask, 
-                    start_idx=first_latent_frames, 
-                    blend_frames=blend_frames,
-                    strength=first_strength,
-                    direction="forward"
-                )
         
         # 处理尾帧
         if last_image is not None and last_strength > 0.0:
@@ -166,16 +136,6 @@ class LTXVFirstLastFrameControl_TTP(io.ComfyNode):
             
             # 设置尾帧的noise_mask
             noise_mask[:, :, last_start_idx:] = 1.0 - last_strength
-            
-            # 羽化过渡
-            if blend_frames > 0:
-                cls._apply_blend(
-                    noise_mask,
-                    start_idx=last_start_idx - 1,
-                    blend_frames=blend_frames,
-                    strength=last_strength,
-                    direction="backward"
-                )
         
         return io.NodeOutput({
             "samples": samples, 
@@ -215,40 +175,6 @@ class LTXVFirstLastFrameControl_TTP(io.ComfyNode):
         latent = vae.encode(encode_pixels)
         
         return latent
-    
-    @staticmethod
-    def _apply_blend(noise_mask, start_idx, blend_frames, strength, direction="forward"):
-        """
-        应用羽化过渡
-        
-        Args:
-            noise_mask: noise mask张量
-            start_idx: 起始索引
-            blend_frames: 羽化帧数
-            strength: 基础强度
-            direction: 方向 ("forward"向前, "backward"向后)
-        """
-        total_frames = noise_mask.shape[2]
-        
-        for i in range(1, blend_frames + 1):
-            if direction == "forward":
-                idx = start_idx + i
-            else:  # backward
-                idx = start_idx - i
-            
-            # 边界检查
-            if idx < 0 or idx >= total_frames:
-                continue
-            
-            # 计算羽化alpha (线性衰减)
-            # 离边界越远，alpha越小
-            alpha = (blend_frames - i + 1) / (blend_frames + 1) * strength
-            
-            # 更新noise_mask (alpha越大，保留的引导越强)
-            # 1.0 - alpha 表示允许多少噪声
-            current_mask = noise_mask[:, :, idx:idx+1]
-            blended_mask = max(1.0 - alpha, current_mask.item())
-            noise_mask[:, :, idx:idx+1] = blended_mask
     
     # 兼容旧API
     generate = execute
