@@ -32,6 +32,80 @@ https://github.com/user-attachments/assets/af06b9d3-9c84-4a83-ba90-eb4ec4bb2e99
 
 ## **Instructions**
 
+### **Smart Tile Experimental Workflow**
+
+The **Smart Tile Experimental** nodes provide a manual tile workflow that keeps the existing automatic tile nodes unchanged. They are designed for layouts where you want to split the image by visual structure, such as face, hands, subject, clothes, foreground, and background.
+
+The first experimental version uses a **large sampling area** and a **smaller paste area**:
+
+- `TTP Smart Tile Layout (Experimental)`: stores a JSON tile layout.
+- `TTP Smart Tile Crop (Experimental)`: reads the input image directly, crops padded tile images, and outputs tile metadata plus a debug preview.
+- `TTP Smart Tile Visual Crop (Experimental)`: creates a visual/parameter-based crop plan without JSON, using grid controls plus optional focus regions.
+- `TTP Smart Tile Assemble (Experimental)`: assembles sampled tiles back into the final image with feathered weighted blending, priority, and importance weights.
+
+Visual workflow without JSON:
+
+```text
+Load Image
+  → TTP Smart Tile Visual Crop (Experimental)
+  → Preview the plan output and tune grid/focus parameters
+  → VAE Encode / Sampler / VAE Decode
+  → TTP Smart Tile Assemble (Experimental)
+  → Final Image
+```
+
+`TTP Smart Tile Visual Crop (Experimental)` is the recommended starting point if you want to tune the tile plan visually in ComfyUI instead of editing JSON. It provides controls for grid columns/rows, grid padding/blending, optional full-image coverage, and two optional focus boxes. Connect its `preview` output to `PreviewImage` while adjusting parameters.
+
+JSON workflow:
+
+```text
+Load Image
+  → TTP Smart Tile Layout (Experimental)
+  → TTP Smart Tile Crop (Experimental)
+  → VAE Encode / Sampler / VAE Decode
+  → TTP Smart Tile Assemble (Experimental)
+  → Final Image
+```
+
+Example layout:
+
+```json
+{
+  "defaults": {
+    "pad": 128,
+    "blend": 48,
+    "priority": 50,
+    "importance": 1.0
+  },
+  "tiles": [
+    {
+      "name": "full_image",
+      "x": 0,
+      "y": 0,
+      "w": 1.0,
+      "h": 1.0,
+      "pad": 0,
+      "blend": 96,
+      "priority": 10,
+      "importance": 0.5
+    },
+    {
+      "name": "face",
+      "x": 0.35,
+      "y": 0.08,
+      "w": 0.30,
+      "h": 0.28,
+      "pad": 192,
+      "blend": 64,
+      "priority": 100,
+      "importance": 1.0
+    }
+  ]
+}
+```
+
+Coordinates can be pixel values or normalized values from `0.0` to `1.0`. `pad` expands the crop sent into the sampler, while `blend`, `priority`, and `importance` control how the sampled tile is pasted back.
+
 ### **1. Image Tile Batch Node**
 This node cuts an image into pieces automatically based on your specified width and height. It also records the necessary information for further processing.
 

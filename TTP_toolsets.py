@@ -1,6 +1,7 @@
+import json
 import cv2
 import numpy as np
-from PIL import Image, ImageFilter, ImageChops, ImageEnhance
+from PIL import Image, ImageFilter, ImageChops, ImageEnhance, ImageDraw
 import node_helpers
 import torch
 import comfy.model_management
@@ -270,6 +271,523 @@ class TTP_Image_Assy:
                 final_image = new_final_image
 
         return pil2tensor(final_image).unsqueeze(0)
+
+
+def _ttp_clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+def _ttp_round_to(value, multiple):
+    if multiple <= 1:
+        return int(round(value))
+    return int(np.ceil(value / multiple) * multiple)
+
+
+def _ttp_parse_box_value(value, size):
+    if isinstance(value, float) and 0.0 <= value <= 1.0:
+        return int(round(value * size))
+    return int(round(value))
+
+
+def _ttp_parse_margin_value(value, size):
+    if isinstance(value, float) and 0.0 <= value <= 1.0:
+        return int(round(value * size))
+    return int(round(value))
+
+
+def _ttp_normalize_tile_box(tile, image_width, image_height, defaults):
+    x = _ttp_parse_box_value(tile.get("x", 0), image_width)
+    y = _ttp_parse_box_value(tile.get("y", 0), image_height)
+    w = _ttp_parse_box_value(tile.get("w", tile.get("width", image_width)), image_width)
+    h = _ttp_parse_box_value(tile.get("h", tile.get("height", image_height)), image_height)
+
+    x = _ttp_clamp(x, 0, image_width)
+    y = _ttp_clamp(y, 0, image_height)
+    w = _ttp_clamp(w, 1, image_width - x)
+    h = _ttp_clamp(h, 1, image_height - y)
+
+    pad_value = tile.get("pad", tile.get("padding", defaults.get("pad", 0)))
+    blend_value = tile.get("blend", tile.get("feather", defaults.get("blend", 32)))
+    pad = _ttp_parse_margin_value(pad_value, max(image_width, image_height))
+    blend = _ttp_parse_margin_value(blend_value, max(w, h))
+
+    return {
+        "name": str(tile.get("name", f"tile_{tile.get('id', 0)}")),
+        "core_box": [x, y, w, h],
+        "pad": max(0, pad),
+        "blend": max(0, blend),
+        "priority": float(tile.get("priority", defaults.get("priority", 50))),
+        "importance": float(tile.get("importance", defaults.get("importance", 1.0))),
+        "strength": float(tile.get("strength", defaults.get("strength", 1.0))),
+        "prompt_tag": str(tile.get("prompt_tag", tile.get("name", ""))),
+        "align": bool(tile.get("align", defaults.get("align", False))),
+    }
+
+
+def _ttp_expand_grid_tiles(grid, defaults):
+    x_lines = grid.get("x", [])
+    y_lines = grid.get("y", [])
+    if len(x_lines) < 2 or len(y_lines) < 2:
+        raise ValueError("Smart Tile grid layout requires at least two x lines and two y lines")
+
+    prefix = str(grid.get("prefix", defaults.get("prefix", "grid")))
+    grid_defaults = defaults.copy()
+    grid_defaults.update({k: v for k, v in grid.items() if k not in {"x", "y", "prefix"}})
+
+    tiles = []
+    for row in range(len(y_lines) - 1):
+        for col in range(len(x_lines) - 1):
+            x0, x1 = x_lines[col], x_lines[col + 1]
+            y0, y1 = y_lines[row], y_lines[row + 1]
+            tiles.append({
+                **grid_defaults,
+                "name": f"{prefix}_{row}_{col}",
+                "x": x0,
+                "y": y0,
+                "w": x1 - x0,
+                "h": y1 - y0,
+            })
+    return tiles
+
+
+def _ttp_parse_smart_tile_layout(layout_text, image_width, image_height):
+    try:
+        layout = json.loads(layout_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid Smart Tile layout JSON: {exc}") from exc
+
+    defaults = {}
+    raw_tiles = []
+
+    if isinstance(layout, list):
+        raw_tiles = layout
+    elif isinstance(layout, dict):
+        defaults = dict(layout.get("defaults", {}))
+        if "grid" in layout:
+            raw_tiles.extend(_ttp_expand_grid_tiles(layout["grid"], defaults))
+        raw_tiles.extend(layout.get("tiles", []))
+        raw_tiles.extend(layout.get("custom", []))
+    else:
+        raise ValueError("Smart Tile layout must be a JSON list or object")
+
+    if not raw_tiles:
+        raw_tiles = [{"name": "full_image", "x": 0, "y": 0, "w": image_width, "h": image_height}]
+
+    normalized_tiles = []
+    for index, tile in enumerate(raw_tiles):
+        if not isinstance(tile, dict):
+            raise ValueError(f"Smart Tile entry {index} must be an object")
+        normalized = _ttp_normalize_tile_box({**tile, "id": index}, image_width, image_height, defaults)
+        normalized["id"] = index
+        x, y, w, h = normalized["core_box"]
+        pad = normalized["pad"]
+        sample_left = _ttp_clamp(x - pad, 0, image_width)
+        sample_top = _ttp_clamp(y - pad, 0, image_height)
+        sample_right = _ttp_clamp(x + w + pad, 0, image_width)
+        sample_bottom = _ttp_clamp(y + h + pad, 0, image_height)
+        normalized["sample_box"] = [
+            sample_left,
+            sample_top,
+            max(1, sample_right - sample_left),
+            max(1, sample_bottom - sample_top),
+        ]
+        normalized["paste_box"] = [x, y, w, h]
+        normalized_tiles.append(normalized)
+
+    return normalized_tiles
+
+
+def _ttp_create_feather_mask(width, height, feather):
+    if feather <= 0:
+        return np.ones((height, width, 1), dtype=np.float32)
+
+    yy, xx = np.mgrid[0:height, 0:width]
+    distance_left = xx
+    distance_right = width - 1 - xx
+    distance_top = yy
+    distance_bottom = height - 1 - yy
+    distance = np.minimum(np.minimum(distance_left, distance_right), np.minimum(distance_top, distance_bottom))
+    mask = np.clip(distance / max(1, feather), 0.0, 1.0).astype(np.float32)
+    return mask[:, :, None]
+
+
+def _ttp_pad_image_to_size(image, target_width, target_height):
+    if image.width == target_width and image.height == target_height:
+        return image
+
+    padded = Image.new("RGB", (target_width, target_height))
+    padded.paste(image, (0, 0))
+
+    if image.width < target_width:
+        right_edge = image.crop((image.width - 1, 0, image.width, image.height))
+        right_fill = right_edge.resize((target_width - image.width, image.height), Image.Resampling.NEAREST)
+        padded.paste(right_fill, (image.width, 0))
+
+    if image.height < target_height:
+        bottom_edge = padded.crop((0, image.height - 1, target_width, image.height))
+        bottom_fill = bottom_edge.resize((target_width, target_height - image.height), Image.Resampling.NEAREST)
+        padded.paste(bottom_fill, (0, image.height))
+
+    return padded
+
+
+def _ttp_crop_smart_tiles_from_meta(pil_image, tiles_meta, round_to):
+    image_width, image_height = pil_image.size
+    tile_images = []
+    positions = []
+    for tile in tiles_meta:
+        sx, sy, sw, sh = tile["sample_box"]
+        sw = max(1, _ttp_round_to(sw, round_to))
+        sh = max(1, _ttp_round_to(sh, round_to))
+        if sx + sw > image_width:
+            sx = max(0, image_width - sw)
+        if sy + sh > image_height:
+            sy = max(0, image_height - sh)
+        sw = min(sw, image_width - sx)
+        sh = min(sh, image_height - sy)
+        tile["sample_box"] = [sx, sy, sw, sh]
+
+        crop = pil_image.crop((sx, sy, sx + sw, sy + sh))
+        tile_images.append(crop)
+        tile["tile_canvas_box"] = [0, 0, sw, sh]
+        x, y, w, h = tile["paste_box"]
+        positions.append((x, y, x + w, y + h))
+
+    max_tile_width = max(tile.width for tile in tile_images)
+    max_tile_height = max(tile.height for tile in tile_images)
+    max_tile_width = max(1, _ttp_round_to(max_tile_width, round_to))
+    max_tile_height = max(1, _ttp_round_to(max_tile_height, round_to))
+    tile_tensors = []
+    for tile, crop in zip(tiles_meta, tile_images):
+        tile["tile_canvas_size"] = [max_tile_width, max_tile_height]
+        padded_crop = _ttp_pad_image_to_size(crop, max_tile_width, max_tile_height)
+        tile_tensors.append(pil2tensor(padded_crop))
+
+    tiles = torch.cat(tile_tensors, dim=0)
+    preview = pil_image.copy()
+    draw = ImageDraw.Draw(preview)
+    colors = ["red", "lime", "cyan", "yellow", "magenta", "orange", "blue", "white"]
+    for tile in tiles_meta:
+        color = colors[tile["id"] % len(colors)]
+        sx, sy, sw, sh = tile["sample_box"]
+        x, y, w, h = tile["paste_box"]
+        draw.rectangle((sx, sy, sx + sw, sy + sh), outline=color, width=2)
+        draw.rectangle((x, y, x + w, y + h), outline="white", width=2)
+        draw.text((x + 4, y + 4), f'{tile["id"]}:{tile["name"]}', fill=color)
+
+    tile_meta = {
+        "version": 2,
+        "type": "ttp_smart_tile",
+        "original_size": [image_width, image_height],
+        "tiles": tiles_meta,
+    }
+    return tiles, tile_meta, positions, pil2tensor(preview)
+
+
+class TTP_Smart_Tile_Layout_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        default_layout = json.dumps({
+            "defaults": {"pad": 128, "blend": 48, "priority": 50, "importance": 1.0},
+            "tiles": [
+                {"name": "full_image", "x": 0, "y": 0, "w": 1.0, "h": 1.0, "pad": 0, "blend": 96, "priority": 10, "importance": 0.5}
+            ]
+        }, indent=2)
+        return {
+            "required": {
+                "layout_json": ("STRING", {"default": default_layout, "multiline": True}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("layout_json",)
+    FUNCTION = "pass_layout"
+    CATEGORY = "TTP/Smart Tile Experimental"
+
+    def pass_layout(self, layout_json):
+        return (layout_json,)
+
+
+class TTP_Smart_Tile_Crop_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        default_layout = json.dumps({
+            "defaults": {"pad": 128, "blend": 48, "priority": 50, "importance": 1.0},
+            "tiles": [
+                {"name": "full_image", "x": 0, "y": 0, "w": 1.0, "h": 1.0, "pad": 0, "blend": 96, "priority": 10, "importance": 0.5},
+                {"name": "center_detail", "x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5, "pad": 128, "blend": 48, "priority": 100, "importance": 1.0}
+            ]
+        }, indent=2)
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "layout_json": ("STRING", {"default": default_layout, "multiline": True}),
+                "round_to": ("INT", {"default": 8, "min": 1, "max": 128, "step": 1}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "TTP_SMART_TILE_META", "LIST", "IMAGE")
+    RETURN_NAMES = ("tiles", "tile_meta", "positions", "preview")
+    FUNCTION = "crop_tiles"
+    CATEGORY = "TTP/Smart Tile Experimental"
+
+    def crop_tiles(self, image, layout_json, round_to=8):
+        pil_image = tensor2pil(image[0].unsqueeze(0)).convert("RGB")
+        image_width, image_height = pil_image.size
+        tiles_meta = _ttp_parse_smart_tile_layout(layout_json, image_width, image_height)
+        return _ttp_crop_smart_tiles_from_meta(pil_image, tiles_meta, round_to)
+
+
+class TTP_Smart_Tile_Visual_Crop_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "grid_columns": ("INT", {"default": 2, "min": 1, "max": 8, "step": 1}),
+                "grid_rows": ("INT", {"default": 2, "min": 1, "max": 8, "step": 1}),
+                "include_full_image": ("BOOLEAN", {"default": True}),
+                "grid_pad": ("INT", {"default": 128, "min": 0, "max": 1024, "step": 8}),
+                "grid_blend": ("INT", {"default": 64, "min": 0, "max": 512, "step": 8}),
+                "grid_priority": ("FLOAT", {"default": 40.0, "min": 0.0, "max": 200.0, "step": 1.0}),
+                "grid_importance": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 4.0, "step": 0.05}),
+                "round_to": ("INT", {"default": 8, "min": 1, "max": 128, "step": 1}),
+                "focus_1_enabled": ("BOOLEAN", {"default": False}),
+                "focus_1_x": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "focus_1_y": ("FLOAT", {"default": 0.08, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "focus_1_w": ("FLOAT", {"default": 0.30, "min": 0.01, "max": 1.0, "step": 0.01}),
+                "focus_1_h": ("FLOAT", {"default": 0.28, "min": 0.01, "max": 1.0, "step": 0.01}),
+                "focus_2_enabled": ("BOOLEAN", {"default": False}),
+                "focus_2_x": ("FLOAT", {"default": 0.25, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "focus_2_y": ("FLOAT", {"default": 0.55, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "focus_2_w": ("FLOAT", {"default": 0.50, "min": 0.01, "max": 1.0, "step": 0.01}),
+                "focus_2_h": ("FLOAT", {"default": 0.20, "min": 0.01, "max": 1.0, "step": 0.01}),
+                "focus_pad": ("INT", {"default": 192, "min": 0, "max": 1024, "step": 8}),
+                "focus_blend": ("INT", {"default": 64, "min": 0, "max": 512, "step": 8}),
+                "focus_priority": ("FLOAT", {"default": 110.0, "min": 0.0, "max": 300.0, "step": 1.0}),
+                "focus_importance": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.05}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "TTP_SMART_TILE_META", "LIST", "IMAGE")
+    RETURN_NAMES = ("tiles", "tile_meta", "positions", "preview")
+    FUNCTION = "visual_crop_tiles"
+    CATEGORY = "TTP/Smart Tile Experimental"
+
+    def _add_tile_meta(self, raw_tiles, image_width, image_height):
+        tiles_meta = []
+        for index, tile in enumerate(raw_tiles):
+            normalized = _ttp_normalize_tile_box({**tile, "id": index}, image_width, image_height, {})
+            normalized["id"] = index
+            x, y, w, h = normalized["core_box"]
+            pad = normalized["pad"]
+            sample_left = _ttp_clamp(x - pad, 0, image_width)
+            sample_top = _ttp_clamp(y - pad, 0, image_height)
+            sample_right = _ttp_clamp(x + w + pad, 0, image_width)
+            sample_bottom = _ttp_clamp(y + h + pad, 0, image_height)
+            normalized["sample_box"] = [
+                sample_left,
+                sample_top,
+                max(1, sample_right - sample_left),
+                max(1, sample_bottom - sample_top),
+            ]
+            normalized["paste_box"] = [x, y, w, h]
+            tiles_meta.append(normalized)
+        return tiles_meta
+
+    def visual_crop_tiles(
+        self,
+        image,
+        grid_columns,
+        grid_rows,
+        include_full_image,
+        grid_pad,
+        grid_blend,
+        grid_priority,
+        grid_importance,
+        round_to,
+        focus_1_enabled,
+        focus_1_x,
+        focus_1_y,
+        focus_1_w,
+        focus_1_h,
+        focus_2_enabled,
+        focus_2_x,
+        focus_2_y,
+        focus_2_w,
+        focus_2_h,
+        focus_pad,
+        focus_blend,
+        focus_priority,
+        focus_importance,
+    ):
+        pil_image = tensor2pil(image[0].unsqueeze(0)).convert("RGB")
+        image_width, image_height = pil_image.size
+        raw_tiles = []
+
+        if include_full_image:
+            raw_tiles.append({
+                "name": "full_image",
+                "x": 0.0,
+                "y": 0.0,
+                "w": 1.0,
+                "h": 1.0,
+                "pad": 0,
+                "blend": max(grid_blend, focus_blend),
+                "priority": max(0.0, grid_priority * 0.25),
+                "importance": max(0.0, grid_importance * 0.5),
+            })
+
+        for row in range(grid_rows):
+            for col in range(grid_columns):
+                raw_tiles.append({
+                    "name": f"grid_{row}_{col}",
+                    "x": col / grid_columns,
+                    "y": row / grid_rows,
+                    "w": 1.0 / grid_columns,
+                    "h": 1.0 / grid_rows,
+                    "pad": grid_pad,
+                    "blend": grid_blend,
+                    "priority": grid_priority,
+                    "importance": grid_importance,
+                })
+
+        focus_tiles = [
+            (focus_1_enabled, "focus_1", focus_1_x, focus_1_y, focus_1_w, focus_1_h),
+            (focus_2_enabled, "focus_2", focus_2_x, focus_2_y, focus_2_w, focus_2_h),
+        ]
+        for enabled, name, x, y, w, h in focus_tiles:
+            if enabled:
+                raw_tiles.append({
+                    "name": name,
+                    "x": x,
+                    "y": y,
+                    "w": w,
+                    "h": h,
+                    "pad": focus_pad,
+                    "blend": focus_blend,
+                    "priority": focus_priority,
+                    "importance": focus_importance,
+                })
+
+        tiles_meta = self._add_tile_meta(raw_tiles, image_width, image_height)
+        return _ttp_crop_smart_tiles_from_meta(pil_image, tiles_meta, round_to)
+
+
+class TTP_Smart_Tile_Assemble_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "sampled_tiles": ("IMAGE",),
+                "tile_meta": ("TTP_SMART_TILE_META", {"forceInput": True}),
+                "blend_multiplier": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.05}),
+                "output_scale": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 16.0, "step": 0.05}),
+                "use_priority": ("BOOLEAN", {"default": True}),
+            },
+            "optional": {
+                "base_image": ("IMAGE",),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "IMAGE")
+    RETURN_NAMES = ("image", "weight_preview")
+    FUNCTION = "assemble_tiles"
+    CATEGORY = "TTP/Smart Tile Experimental"
+
+    def assemble_tiles(self, sampled_tiles, tile_meta, blend_multiplier=1.0, output_scale=0.0, use_priority=True, base_image=None):
+        if not isinstance(tile_meta, dict) or tile_meta.get("type") != "ttp_smart_tile":
+            raise ValueError("tile_meta must come from TTP Smart Tile Crop (Experimental)")
+
+        tiles_info = tile_meta.get("tiles", [])
+        if len(tiles_info) != sampled_tiles.shape[0]:
+            raise ValueError(f"sampled_tiles batch ({sampled_tiles.shape[0]}) does not match tile_meta tiles ({len(tiles_info)})")
+
+        original_width, original_height = tile_meta["original_size"]
+        if output_scale <= 0:
+            inferred_scales = []
+            for index, tile in enumerate(tiles_info):
+                _, _, sw, sh = tile["sample_box"]
+                canvas_width, canvas_height = tile.get("tile_canvas_size", [sw, sh])
+                canvas_box = tile.get("tile_canvas_box", [0, 0, sw, sh])
+                content_width = float(sampled_tiles[index].shape[1]) * (canvas_box[2] / max(1, canvas_width))
+                content_height = float(sampled_tiles[index].shape[0]) * (canvas_box[3] / max(1, canvas_height))
+                inferred_scales.append(content_width / max(1, sw))
+                inferred_scales.append(content_height / max(1, sh))
+            output_scale = float(np.median(inferred_scales)) if inferred_scales else 1.0
+            output_scale = max(0.01, output_scale)
+
+        output_width = max(1, int(round(original_width * output_scale)))
+        output_height = max(1, int(round(original_height * output_scale)))
+
+        if base_image is not None:
+            base_pil = tensor2pil(base_image[0].unsqueeze(0)).convert("RGB")
+            if base_pil.size != (output_width, output_height):
+                base_pil = base_pil.resize((output_width, output_height), Image.Resampling.LANCZOS)
+            canvas = np.array(base_pil).astype(np.float32) / 255.0
+            weights = np.ones((output_height, output_width, 1), dtype=np.float32)
+        else:
+            canvas = np.zeros((output_height, output_width, 3), dtype=np.float32)
+            weights = np.zeros((output_height, output_width, 1), dtype=np.float32)
+
+        for index, tile in enumerate(tiles_info):
+            tile_pil = tensor2pil(sampled_tiles[index].unsqueeze(0)).convert("RGB")
+            sx, sy, sw, sh = tile["sample_box"]
+            px, py, pw, ph = tile["paste_box"]
+
+            canvas_width, canvas_height = tile.get("tile_canvas_size", [sw, sh])
+            canvas_box = tile.get("tile_canvas_box", [0, 0, sw, sh])
+            content_left = int(round(tile_pil.width * canvas_box[0] / max(1, canvas_width)))
+            content_top = int(round(tile_pil.height * canvas_box[1] / max(1, canvas_height)))
+            content_width = max(1, int(round(tile_pil.width * canvas_box[2] / max(1, canvas_width))))
+            content_height = max(1, int(round(tile_pil.height * canvas_box[3] / max(1, canvas_height))))
+
+            tile_scale_x = content_width / max(1, sw)
+            tile_scale_y = content_height / max(1, sh)
+            local_left = int(round((px - sx) * tile_scale_x))
+            local_top = int(round((py - sy) * tile_scale_y))
+            local_right = int(round(local_left + pw * tile_scale_x))
+            local_bottom = int(round(local_top + ph * tile_scale_y))
+            local_left = _ttp_clamp(content_left + local_left, 0, tile_pil.width - 1)
+            local_top = _ttp_clamp(content_top + local_top, 0, tile_pil.height - 1)
+            local_right = _ttp_clamp(content_left + local_right, local_left + 1, tile_pil.width)
+            local_bottom = _ttp_clamp(content_top + local_bottom, local_top + 1, tile_pil.height)
+
+            paste_region = tile_pil.crop((local_left, local_top, local_right, local_bottom))
+            out_x = int(round(px * output_scale))
+            out_y = int(round(py * output_scale))
+            out_w = max(1, int(round(pw * output_scale)))
+            out_h = max(1, int(round(ph * output_scale)))
+            if paste_region.size != (out_w, out_h):
+                paste_region = paste_region.resize((out_w, out_h), Image.Resampling.LANCZOS)
+
+            blend = int(round(tile.get("blend", 0) * output_scale * blend_multiplier))
+            mask = _ttp_create_feather_mask(out_w, out_h, blend)
+            importance = max(0.0, float(tile.get("importance", 1.0)))
+            priority = max(0.0, float(tile.get("priority", 50.0)))
+            priority_scale = (1.0 + priority / 100.0) if use_priority else 1.0
+            mask = mask * importance * priority_scale
+
+            region = np.array(paste_region).astype(np.float32) / 255.0
+            x_end = min(output_width, out_x + out_w)
+            y_end = min(output_height, out_y + out_h)
+            region_w = x_end - out_x
+            region_h = y_end - out_y
+            if region_w <= 0 or region_h <= 0:
+                continue
+            canvas[out_y:y_end, out_x:x_end] += region[:region_h, :region_w] * mask[:region_h, :region_w]
+            weights[out_y:y_end, out_x:x_end] += mask[:region_h, :region_w]
+
+        safe_weights = np.maximum(weights, 1e-6)
+        output = canvas / safe_weights
+        output = np.clip(output, 0.0, 1.0)
+        weight_preview = np.clip(weights / max(1e-6, weights.max()), 0.0, 1.0)
+        weight_preview = np.repeat(weight_preview, 3, axis=2)
+
+        return (
+            torch.from_numpy(output.astype(np.float32)).unsqueeze(0),
+            torch.from_numpy(weight_preview.astype(np.float32)).unsqueeze(0),
+        )
 
 
 class TTP_CoordinateSplitter:
@@ -1110,7 +1628,11 @@ NODE_CLASS_MAPPINGS = {
     "TTP_condsetarea_merge_test": TTP_condsetarea_merge_test,
     "TTP_Expand_And_Mask": TTP_Expand_And_Mask,
     "TTP_text_mix": TTP_text_mix,
-    "TeaCacheHunyuanVideoSampler": TeaCacheHunyuanVideoSampler
+    "TeaCacheHunyuanVideoSampler": TeaCacheHunyuanVideoSampler,
+    "TTP_Smart_Tile_Layout_Experimental": TTP_Smart_Tile_Layout_Experimental,
+    "TTP_Smart_Tile_Crop_Experimental": TTP_Smart_Tile_Crop_Experimental,
+    "TTP_Smart_Tile_Visual_Crop_Experimental": TTP_Smart_Tile_Visual_Crop_Experimental,
+    "TTP_Smart_Tile_Assemble_Experimental": TTP_Smart_Tile_Assemble_Experimental,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1124,5 +1646,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TTP_condsetarea_merge_test": "TTP_condsetarea_merge_test",
     "TTP_Expand_And_Mask": "TTP_Expand_And_Mask",
     "TTP_text_mix": "TTP_text_mix",
-    "TeaCacheHunyuanVideoSampler": "TTP_TeaCache HunyuanVideo Sampler"
+    "TeaCacheHunyuanVideoSampler": "TTP_TeaCache HunyuanVideo Sampler",
+    "TTP_Smart_Tile_Layout_Experimental": "TTP Smart Tile Layout (Experimental)",
+    "TTP_Smart_Tile_Crop_Experimental": "TTP Smart Tile Crop (Experimental)",
+    "TTP_Smart_Tile_Visual_Crop_Experimental": "TTP Smart Tile Visual Crop (Experimental)",
+    "TTP_Smart_Tile_Assemble_Experimental": "TTP Smart Tile Assemble (Experimental)",
 }
