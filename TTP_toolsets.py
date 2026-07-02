@@ -1,9 +1,9 @@
-import base64
-import io
 import json
+import os
 import cv2
 import numpy as np
-from PIL import Image, ImageFilter, ImageChops, ImageEnhance, ImageDraw
+from PIL import Image, ImageFilter, ImageChops, ImageEnhance, ImageDraw, ImageOps
+import folder_paths
 import node_helpers
 import torch
 import comfy.model_management
@@ -496,27 +496,32 @@ def _ttp_crop_smart_tiles_from_meta(pil_image, tiles_meta, round_to):
     return tiles, tile_meta, positions, pil2tensor(preview)
 
 
-def _ttp_decode_image_data(image_data):
-    text = str(image_data or "").strip()
-    if not text:
-        raise ValueError("No image input was provided. Connect image or use Choose image / Paste image in the interactive tile editor.")
-
-    if "," in text and text.split(",", 1)[0].lower().startswith("data:"):
-        text = text.split(",", 1)[1]
-
+def _ttp_input_image_files():
+    input_dir = folder_paths.get_input_directory()
+    files = [file for file in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, file))]
     try:
-        raw = base64.b64decode(text, validate=False)
-        return Image.open(io.BytesIO(raw)).convert("RGB")
-    except Exception as exc:
-        raise ValueError("image_data is not a valid base64 image. Choose or paste the image again in the interactive tile editor.") from exc
+        files = folder_paths.filter_files_content_types(files, ["image"])
+    except Exception:
+        pass
+    return sorted(files)
 
 
-def _ttp_get_interactive_source_image(image=None, image_data=""):
-    if image is not None:
-        if not isinstance(image, torch.Tensor) or image.ndim != 4 or int(image.shape[0]) <= 0:
-            raise ValueError("image input must be a non-empty ComfyUI IMAGE tensor.")
-        return tensor2pil(image[0].unsqueeze(0)).convert("RGB")
-    return _ttp_decode_image_data(image_data)
+def _ttp_load_input_image(image):
+    image_name = str(image or "").strip()
+    if not image_name:
+        raise ValueError("No image was selected. Use the official image upload/dropdown on this node, or connect source_image.")
+    image_path = folder_paths.get_annotated_filepath(image_name)
+    pil_image = Image.open(image_path)
+    pil_image = ImageOps.exif_transpose(pil_image)
+    return pil_image.convert("RGB")
+
+
+def _ttp_get_interactive_source_image(source_image=None, image=""):
+    if source_image is not None:
+        if not isinstance(source_image, torch.Tensor) or source_image.ndim != 4 or int(source_image.shape[0]) <= 0:
+            raise ValueError("source_image input must be a non-empty ComfyUI IMAGE tensor.")
+        return tensor2pil(source_image[0].unsqueeze(0)).convert("RGB")
+    return _ttp_load_input_image(image)
 
 
 def _ttp_interactive_layout_with_defaults(layout_json, default_pad, default_blend, include_full_image):
@@ -779,7 +784,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
         }, separators=(",", ":"))
         return {
             "required": {
-                "image_data": ("STRING", {"default": "", "multiline": True}),
+                "image": (_ttp_input_image_files(), {"image_upload": True}),
                 "layout_json": ("STRING", {"default": default_layout, "multiline": False}),
                 "default_pad": ("INT", {"default": 128, "min": 0, "max": 2048, "step": 8}),
                 "default_blend": ("INT", {"default": 64, "min": 0, "max": 1024, "step": 8}),
@@ -787,7 +792,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
                 "round_to": ("INT", {"default": 8, "min": 1, "max": 128, "step": 1}),
             },
             "optional": {
-                "image": ("IMAGE",),
+                "source_image": ("IMAGE",),
             }
         }
 
@@ -798,30 +803,40 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
-        image_data = str(kwargs.get("image_data", ""))
+        image = str(kwargs.get("image", ""))
         fingerprint = {
-            "image_data_length": len(image_data),
-            "image_data_tail": image_data[-64:],
+            "image": image,
             "layout_json": kwargs.get("layout_json", ""),
             "default_pad": kwargs.get("default_pad"),
             "default_blend": kwargs.get("default_blend"),
             "include_full_image": kwargs.get("include_full_image"),
             "round_to": kwargs.get("round_to"),
-            "image": type(kwargs.get("image")).__name__ if kwargs.get("image") is not None else None,
+            "source_image": type(kwargs.get("source_image")).__name__ if kwargs.get("source_image") is not None else None,
         }
+        if image and folder_paths.exists_annotated_filepath(image):
+            try:
+                fingerprint["image_mtime"] = os.path.getmtime(folder_paths.get_annotated_filepath(image))
+            except OSError:
+                pass
         return json.dumps(fingerprint, sort_keys=True)
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, image="", **kwargs):
+        if image and not folder_paths.exists_annotated_filepath(image):
+            return f"Invalid image file: {image}"
+        return True
 
     def interactive_crop_tiles(
         self,
-        image_data,
+        image,
         layout_json,
         default_pad=128,
         default_blend=64,
         include_full_image=False,
         round_to=8,
-        image=None,
+        source_image=None,
     ):
-        pil_image = _ttp_get_interactive_source_image(image=image, image_data=image_data)
+        pil_image = _ttp_get_interactive_source_image(source_image=source_image, image=image)
         image_width, image_height = pil_image.size
         normalized_layout_json = _ttp_interactive_layout_with_defaults(
             layout_json,

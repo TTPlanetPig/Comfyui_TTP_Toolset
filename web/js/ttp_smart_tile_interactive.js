@@ -1,4 +1,5 @@
 import { app } from "../../../scripts/app.js";
+import { api } from "../../../scripts/api.js";
 
 const NODE_NAME = "TTP_Smart_Tile_Interactive_Crop_Experimental";
 const MAX_TILES = 64;
@@ -362,85 +363,67 @@ function createNumberInput(value, min, max) {
     return input;
 }
 
-function readBlobAsDataUrl(blob) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result ?? ""));
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(blob);
-    });
+function parseAnnotatedImageName(value) {
+    let name = String(value ?? "").trim();
+    let type = "input";
+    for (const candidate of ["input", "output", "temp"]) {
+        const suffix = ` [${candidate}]`;
+        if (name.endsWith(suffix)) {
+            name = name.slice(0, -suffix.length).trim();
+            type = candidate;
+            break;
+        }
+    }
+    name = name.replace(/\\/g, "/");
+    const slash = name.lastIndexOf("/");
+    const subfolder = slash >= 0 ? name.slice(0, slash) : "";
+    const filename = slash >= 0 ? name.slice(slash + 1) : name;
+    return { filename, subfolder, type };
 }
 
-async function setImageData(node, dataUrl) {
-    const widget = widgetByName(node, "image_data");
-    if (widget) {
-        widget.value = dataUrl;
+function inputImageUrl(value) {
+    const { filename, subfolder, type } = parseAnnotatedImageName(value);
+    if (!filename) {
+        return "";
     }
-    node.ttpSmartTileStatus = "";
-    await new Promise((resolve, reject) => {
-        const image = new Image();
-        image.onload = () => {
-            node.ttpSmartTileImage = {
-                dataUrl,
-                width: image.naturalWidth,
-                height: image.naturalHeight,
-                element: image,
+    const params = new URLSearchParams({ filename, subfolder, type });
+    return api.apiURL(`/view?${params.toString()}`);
+}
+
+async function loadSelectedInputImage(node, force = false) {
+    const value = String(widgetByName(node, "image")?.value ?? "");
+    if (!value) {
+        node.ttpSmartTileImage = null;
+        return;
+    }
+    if (!force && value === node.ttpSmartTileLoadedImageName) {
+        return;
+    }
+    node.ttpSmartTileLoadedImageName = value;
+    const url = inputImageUrl(value);
+    try {
+        await new Promise((resolve, reject) => {
+            const image = new Image();
+            image.onload = () => {
+                node.ttpSmartTileImage = {
+                    url,
+                    filename: value,
+                    width: image.naturalWidth,
+                    height: image.naturalHeight,
+                    element: image,
+                };
+                const layout = readStoredLayout(node) ?? parseLayout(node);
+                writeLayout(node, layout, 0);
+                resolve();
             };
-            const layout = readStoredLayout(node) ?? parseLayout(node);
-            writeLayout(node, layout, 0);
-            resolve();
-        };
-        image.onerror = reject;
-        image.src = dataUrl;
-    });
-    renderEditor(node);
-}
-
-async function loadWidgetImage(node) {
-    const dataUrl = String(widgetByName(node, "image_data")?.value ?? "");
-    if (!dataUrl || dataUrl === node.ttpSmartTileLoadedDataUrl) {
-        return;
-    }
-    node.ttpSmartTileLoadedDataUrl = dataUrl;
-    try {
-        await setImageData(node, dataUrl);
+            image.onerror = reject;
+            image.src = url;
+        });
+        node.ttpSmartTileStatus = "";
     } catch {
-        node.ttpSmartTileStatus = "Stored image could not be loaded.";
-        renderEditor(node);
-    }
-}
-
-async function pasteImageFromClipboard(node) {
-    try {
-        const items = await navigator.clipboard?.read?.();
-        for (const item of items ?? []) {
-            const type = item.types?.find((candidate) => candidate.startsWith("image/"));
-            if (!type) {
-                continue;
-            }
-            const blob = await item.getType(type);
-            await setImageData(node, await readBlobAsDataUrl(blob));
-            return;
-        }
-        node.ttpSmartTileStatus = "Clipboard has no image.";
-    } catch {
-        node.ttpSmartTileStatus = "Clipboard image read was blocked.";
+        node.ttpSmartTileStatus = "Selected input image could not be previewed.";
     }
     renderEditor(node);
-}
-
-async function handlePasteEvent(node, event) {
-    for (const item of event.clipboardData?.items ?? []) {
-        if (!item.type.startsWith("image/")) {
-            continue;
-        }
-        event.preventDefault();
-        const file = item.getAsFile();
-        if (file) {
-            await setImageData(node, await readBlobAsDataUrl(file));
-        }
-        return;
-    }
 }
 
 function editorHeight(node) {
@@ -454,7 +437,6 @@ function ensureEditor(node) {
     if (node.ttpSmartTileContainer) {
         return node.ttpSmartTileContainer;
     }
-    setWidgetVisible(widgetByName(node, "image_data"), false);
     setWidgetVisible(widgetByName(node, "layout_json"), false);
 
     const container = document.createElement("div");
@@ -471,8 +453,6 @@ function ensureEditor(node) {
         "font:12px/1.35 system-ui,-apple-system,BlinkMacSystemFont,sans-serif",
         "outline:none",
     ].join(";");
-    container.addEventListener("paste", (event) => handlePasteEvent(node, event));
-
     if (node.addDOMWidget) {
         const widget = node.addDOMWidget("smart_tile_editor", "Smart Tile Editor", container, {
             serialize: false,
@@ -540,7 +520,7 @@ function renderEditor(node) {
         stage.append(image);
     } else {
         const empty = document.createElement("div");
-        empty.textContent = "No image loaded";
+        empty.textContent = "Select or upload an image with the official image widget above.";
         empty.style.cssText = [
             "position:absolute",
             "inset:0",
@@ -767,24 +747,6 @@ function renderEditor(node) {
     const actions = document.createElement("div");
     actions.style.cssText = "display:flex;gap:6px;align-items:center;flex-wrap:wrap;";
 
-    const fileInput = document.createElement("input");
-    fileInput.type = "file";
-    fileInput.accept = "image/*";
-    fileInput.style.display = "none";
-    fileInput.onchange = async () => {
-        const file = fileInput.files?.[0];
-        if (file) {
-            await setImageData(node, await readBlobAsDataUrl(file));
-        }
-        fileInput.value = "";
-    };
-    container.append(fileInput);
-
-    actions.append(
-        createButton("Choose image", () => fileInput.click()),
-        createButton("Paste image", () => pasteImageFromClipboard(node))
-    );
-
     const gridControls = document.createElement("div");
     gridControls.style.cssText = "display:flex;gap:6px;align-items:center;flex-wrap:wrap;";
     const gridLabel = document.createElement("span");
@@ -910,6 +872,16 @@ function renderEditor(node) {
 }
 
 function attachWidgetRefresh(node) {
+    const imageWidget = widgetByName(node, "image");
+    if (imageWidget && !imageWidget.ttpSmartTileWrapped) {
+        const original = imageWidget.callback;
+        imageWidget.callback = function () {
+            original?.apply(this, arguments);
+            loadSelectedInputImage(node, true);
+        };
+        imageWidget.ttpSmartTileWrapped = true;
+    }
+
     for (const name of ["default_pad", "default_blend", "round_to"]) {
         const widget = widgetByName(node, name);
         if (!widget || widget.ttpSmartTileWrapped) {
@@ -938,7 +910,7 @@ app.registerExtension({
             ensureEditor(this);
             attachWidgetRefresh(this);
             writeLayout(this, parseLayout(this), this.ttpSmartTileSelectedIndex ?? 0);
-            loadWidgetImage(this);
+            loadSelectedInputImage(this);
             renderEditor(this);
         };
 
@@ -948,7 +920,7 @@ app.registerExtension({
             requestAnimationFrame(() => {
                 ensureEditor(this);
                 attachWidgetRefresh(this);
-                loadWidgetImage(this);
+                loadSelectedInputImage(this);
                 writeLayout(this, parseLayout(this), this.ttpSmartTileSelectedIndex ?? 0);
                 renderEditor(this);
             });

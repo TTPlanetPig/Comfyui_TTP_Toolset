@@ -41,14 +41,14 @@ The first experimental version uses a **large sampling area** and a **smaller pa
 - `TTP Smart Tile Layout (Experimental)`: stores a JSON tile layout.
 - `TTP Smart Tile Crop (Experimental)`: reads the input image directly, crops padded tile images, and outputs tile metadata plus a debug preview.
 - `TTP Smart Tile Param Crop (Experimental)`: creates a parameter-based crop plan without JSON, using grid controls plus optional focus regions.
-- `TTP Smart Tile Interactive Crop (Experimental)`: adds a front-end tile editor for still images. It can use a connected image, or you can choose/paste an image directly in the node and drag/resize tile rectangles on top of it.
+- `TTP Smart Tile Interactive Crop (Experimental)`: adds a front-end tile editor for still images. It uses the same official ComfyUI image upload/dropdown widget style as `Load Image`, can also use a connected `source_image`, and lets you drag/resize tile rectangles on top of the image.
 - `TTP Smart Tile Assemble (Experimental)`: assembles sampled tiles back into the final image with feathered weighted blending, priority, and importance weights.
 
 Interactive image workflow:
 
 ```text
 TTP Smart Tile Interactive Crop (Experimental)
-  → choose/paste an image or connect image input
+  → upload/select image with the official image widget or connect source_image
   → drag/resize/add/delete/fill tile rectangles in the node
   → VAE Encode / Sampler / VAE Decode
   → TTP Smart Tile Assemble (Experimental)
@@ -66,7 +66,7 @@ Load Image
   → Final Image
 ```
 
-`TTP Smart Tile Interactive Crop (Experimental)` is the recommended starting point when you want to manually split a still image by visual regions. Use `Choose image` or `Paste image` in the node if you do not want an upstream image loader. The editor can generate a standard grid from column/row numbers, replace the full layout with that grid, or subdivide the currently selected tile. It also stores the selected image and tile layout in hidden widgets so the workflow keeps the current plan.
+`TTP Smart Tile Interactive Crop (Experimental)` is the recommended starting point when you want to manually split a still image by visual regions. Its `image` input follows the official `Load Image` pattern, so uploads go to ComfyUI's input folder and the workflow stores the selected filename instead of embedding the whole image. The editor can generate a standard grid from column/row numbers, replace the full layout with that grid, or subdivide the currently selected tile. It stores the tile layout in a hidden widget so the workflow keeps the current plan.
 
 `TTP Smart Tile Param Crop (Experimental)` is useful when you want a repeatable grid/focus layout from numeric controls. It provides controls for grid columns/rows, grid padding/blending, optional full-image coverage, and two optional focus boxes. Connect its `preview` output to `PreviewImage` while adjusting parameters.
 
