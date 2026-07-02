@@ -2,9 +2,11 @@ import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 
 const NODE_NAME = "TTP_Smart_Tile_Interactive_Crop_Experimental";
+const LOOP_SOURCE_NAME = "TTP_Smart_Tile_Loop_Source_Experimental";
 const MAX_TILES = 64;
 const MAX_GRID_AXIS = 8;
 const dragThresholdPx = 3;
+const snapGuideThresholdPx = 10;
 const STORAGE_PREFIX = "ttp_smart_tile_interactive_layout";
 
 function widgetByName(node, name) {
@@ -115,13 +117,19 @@ function normalizeAxis(node, start, end, axis) {
 }
 
 function normalizeTile(node, raw) {
+    const metadata = {};
+    for (const key of ["name", "source", "label", "score", "layer", "object_id", "occlusion_priority", "priority", "importance", "pad", "blend", "object_mask"]) {
+        if (raw && raw[key] !== undefined) {
+            metadata[key] = raw[key];
+        }
+    }
     const x0 = Number(raw?.x0 ?? raw?.x ?? 0);
     const y0 = Number(raw?.y0 ?? raw?.y ?? 0);
     const x1 = Number(raw?.x1 ?? (Number(raw?.x ?? 0) + Number(raw?.w ?? raw?.width ?? 0.5)));
     const y1 = Number(raw?.y1 ?? (Number(raw?.y ?? 0) + Number(raw?.h ?? raw?.height ?? 0.5)));
     const [left, right] = normalizeAxis(node, x0, x1, "x");
     const [top, bottom] = normalizeAxis(node, y0, y1, "y");
-    return { x0: left, y0: top, x1: right, y1: bottom };
+    return { ...metadata, x0: left, y0: top, x1: right, y1: bottom };
 }
 
 function defaultTiles(node) {
@@ -310,6 +318,39 @@ function analyzeCoverage(tiles) {
     };
 }
 
+function fillTileGaps(node, tiles, maxTiles = MAX_TILES) {
+    const nextTiles = (Array.isArray(tiles) ? tiles : []).map((tile) => ({ ...tile }));
+    let coverageState = analyzeCoverage(nextTiles);
+    let added = 0;
+    while (coverageState.gaps.length && nextTiles.length < maxTiles) {
+        const previousArea = coverageState.uncoveredArea;
+        const gapTile = normalizeTile(node, coverageState.gaps[0]);
+        nextTiles.push({
+            ...gapTile,
+            name: `auto_gap_${added + 1}`,
+            source: "auto_gap",
+            label: "background gap",
+            priority: 5,
+            importance: 0.35,
+            layer: 0,
+            object_id: 0,
+            occlusion_priority: 0,
+        });
+        added += 1;
+        coverageState = analyzeCoverage(nextTiles);
+        if (coverageState.uncoveredArea >= previousArea - 1e-8) {
+            nextTiles.pop();
+            added -= 1;
+            break;
+        }
+    }
+    return {
+        tiles: nextTiles,
+        coverage: coverageState,
+        added,
+    };
+}
+
 function tilePixelRect(node, tile) {
     const size = imageSourceSize(node);
     if (!size) {
@@ -425,6 +466,117 @@ async function loadSelectedInputImage(node, force = false) {
         node.ttpSmartTileStatus = "Selected input image could not be previewed.";
     }
     renderEditor(node);
+}
+
+async function inferSmartTileLayout(node) {
+    const mode = String(widgetByName(node, "auto_detect_mode")?.value ?? "none");
+    if (mode === "none") {
+        node.ttpSmartTileStatus = "Set auto detect mode to sam3.1 or qwenvl3 before inference.";
+        renderEditor(node);
+        return;
+    }
+    const requestWidget = widgetByName(node, "auto_detect_request");
+    if (requestWidget) {
+        requestWidget.value = Number(requestWidget.value ?? 0) + 1;
+    }
+    node.ttpSmartTileStatus = `Queued ${mode} inference...`;
+    renderEditor(node);
+    try {
+        await app.queuePrompt(0);
+    } catch (error) {
+        node.ttpSmartTileStatus = error?.message || "Could not queue inference.";
+        renderEditor(node);
+    }
+}
+
+function applyInferenceResult(detail) {
+    if (!detail?.node_id || !app.graph) {
+        return;
+    }
+    const node = app.graph.getNodeById?.(Number(detail.node_id)) ?? app.graph._nodes_by_id?.[detail.node_id];
+    if (!node || (node.comfyClass ?? node.type) !== NODE_NAME) {
+        return;
+    }
+    const statusParts = [];
+    if (detail.message) {
+        statusParts.push(detail.message);
+    } else {
+        statusParts.push(detail.ok ? "Inference finished." : "Inference failed.");
+    }
+    if (detail.layout_json) {
+        try {
+            const layout = JSON.parse(detail.layout_json);
+            if (Array.isArray(layout?.tiles) && layout.tiles.length) {
+                const filled = fillTileGaps(node, layout.tiles);
+                writeLayout(node, filled.tiles, 0);
+                if (filled.added > 0) {
+                    statusParts.push(`Auto Tile added ${filled.added} gap tile(s).`);
+                }
+                if (filled.coverage.gaps.length > 0) {
+                    statusParts.push(`${filled.coverage.gaps.length} gap(s) remain.`);
+                }
+            }
+        } catch (error) {
+            node.ttpSmartTileStatus = error?.message || "Inference returned invalid layout.";
+            renderEditor(node);
+            return;
+        }
+    }
+    node.ttpSmartTileStatus = statusParts.join(" ");
+    renderEditor(node);
+}
+
+function bumpWidget(node, name) {
+    const widget = widgetByName(node, name);
+    if (widget) {
+        widget.value = Number(widget.value ?? 0) + 1;
+    }
+}
+
+function setLoopSourceStatus(node, status) {
+    node.ttpSmartTileLoopStatus = status;
+    const widget = widgetByName(node, "loop_status");
+    if (widget) {
+        widget.value = status;
+    }
+    scheduleCanvas(node);
+}
+
+async function queueSmartTileLoop(node, restart = false) {
+    if (!node) {
+        return;
+    }
+    if (restart) {
+        bumpWidget(node, "restart_request");
+    }
+    bumpWidget(node, "loop_request");
+    node.ttpSmartTileLoopActive = true;
+    setLoopSourceStatus(node, restart ? "Starting tile loop..." : "Queueing next tile...");
+    try {
+        await app.queuePrompt(0);
+    } catch (error) {
+        node.ttpSmartTileLoopActive = false;
+        setLoopSourceStatus(node, error?.message || "Could not queue tile loop.");
+    }
+}
+
+function applyLoopEvent(detail) {
+    if (!detail?.source_node_id || !app.graph) {
+        return;
+    }
+    const node = app.graph.getNodeById?.(Number(detail.source_node_id)) ?? app.graph._nodes_by_id?.[detail.source_node_id];
+    if (!node || (node.comfyClass ?? node.type) !== LOOP_SOURCE_NAME || !node.ttpSmartTileLoopActive) {
+        return;
+    }
+    const count = Number(detail.count ?? 0);
+    const index = Number(detail.index ?? 0);
+    if (detail.done) {
+        node.ttpSmartTileLoopActive = false;
+        setLoopSourceStatus(node, detail.message || `Done ${count}/${count}`);
+        return;
+    }
+    setLoopSourceStatus(node, detail.message || `Next tile ${index + 1}/${count}`);
+    queueSmartTileLoop(node, false);
 }
 
 function editorHeight(node) {
@@ -576,6 +728,68 @@ function renderEditor(node) {
         element.style.width = `${Math.max(0.1, (tile.x1 - tile.x0) * 100)}%`;
         element.style.height = `${Math.max(0.1, (tile.y1 - tile.y0) * 100)}%`;
     };
+    const snapTargets = (axis, skipIndex) => {
+        const values = [0, 0.25, 1 / 3, 0.5, 2 / 3, 0.75, 1];
+        for (const [tileIndex, tile] of tiles.entries()) {
+            if (tileIndex === skipIndex) {
+                continue;
+            }
+            if (axis === "x") {
+                values.push(tile.x0, tile.x1, (tile.x0 + tile.x1) / 2);
+            } else {
+                values.push(tile.y0, tile.y1, (tile.y0 + tile.y1) / 2);
+            }
+        }
+        return [...new Set(values.map((value) => roundRatio(value)))].sort((a, b) => a - b);
+    };
+    const nearestSnap = (value, axis, skipIndex) => {
+        const rect = stage.getBoundingClientRect();
+        const dimension = axis === "x" ? rect.width : rect.height;
+        const threshold = snapGuideThresholdPx / Math.max(1, dimension);
+        let best = value;
+        let bestDistance = threshold;
+        for (const target of snapTargets(axis, skipIndex)) {
+            const distance = Math.abs(value - target);
+            if (distance <= bestDistance) {
+                best = target;
+                bestDistance = distance;
+            }
+        }
+        return best;
+    };
+    const snapMovedTile = (tile, skipIndex) => {
+        const width = tile.x1 - tile.x0;
+        const height = tile.y1 - tile.y0;
+        const leftSnap = nearestSnap(tile.x0, "x", skipIndex);
+        const rightSnap = nearestSnap(tile.x1, "x", skipIndex);
+        const dx = Math.abs(leftSnap - tile.x0) <= Math.abs(rightSnap - tile.x1)
+            ? leftSnap - tile.x0
+            : rightSnap - tile.x1;
+        const topSnap = nearestSnap(tile.y0, "y", skipIndex);
+        const bottomSnap = nearestSnap(tile.y1, "y", skipIndex);
+        const dy = Math.abs(topSnap - tile.y0) <= Math.abs(bottomSnap - tile.y1)
+            ? topSnap - tile.y0
+            : bottomSnap - tile.y1;
+        return normalizeTile(node, {
+            ...tile,
+            x0: Math.max(0, Math.min(1 - width, tile.x0 + dx)),
+            y0: Math.max(0, Math.min(1 - height, tile.y0 + dy)),
+            x1: Math.max(width, Math.min(1, tile.x0 + dx + width)),
+            y1: Math.max(height, Math.min(1, tile.y0 + dy + height)),
+        });
+    };
+    const snapResizedTile = (tile, skipIndex) => normalizeTile(node, {
+        ...tile,
+        x1: nearestSnap(tile.x1, "x", skipIndex),
+        y1: nearestSnap(tile.y1, "y", skipIndex),
+    });
+    const snapCreatedTile = (tile, skipIndex) => normalizeTile(node, {
+        ...tile,
+        x0: nearestSnap(tile.x0, "x", skipIndex),
+        y0: nearestSnap(tile.y0, "y", skipIndex),
+        x1: nearestSnap(tile.x1, "x", skipIndex),
+        y1: nearestSnap(tile.y1, "y", skipIndex),
+    });
 
     const renderOrder = tiles.map((_tile, index) => index).filter((index) => index !== selectedIndex);
     renderOrder.push(selectedIndex);
@@ -614,17 +828,17 @@ function renderEditor(node) {
             const dy = nextPoint.y - startPoint.y;
             const nextTiles = startTiles.map((tile) => ({ ...tile }));
             if (dragMode === "resize") {
-                nextTiles[index] = normalizeTile(node, {
+                nextTiles[index] = snapResizedTile(normalizeTile(node, {
                     ...startTile,
                     x1: startTile.x1 + dx,
                     y1: startTile.y1 + dy,
-                });
+                }), index);
             } else {
                 const width = startTile.x1 - startTile.x0;
                 const height = startTile.y1 - startTile.y0;
                 const x0 = Math.max(0, Math.min(1 - width, startTile.x0 + dx));
                 const y0 = Math.max(0, Math.min(1 - height, startTile.y0 + dy));
-                nextTiles[index] = normalizeTile(node, { x0, y0, x1: x0 + width, y1: y0 + height });
+                nextTiles[index] = snapMovedTile(normalizeTile(node, { ...startTile, x0, y0, x1: x0 + width, y1: y0 + height }), index);
             }
             writeLayout(node, nextTiles, index);
             if (targetRegion) {
@@ -744,12 +958,12 @@ function renderEditor(node) {
                 stage.append(tempRegion);
             }
             const nextPoint = pointFromEvent(moveEvent);
-            const nextTiles = [...tiles, normalizeTile(node, {
+            const nextTiles = [...tiles, snapCreatedTile(normalizeTile(node, {
                 x0: startPoint.x,
                 y0: startPoint.y,
                 x1: nextPoint.x,
                 y1: nextPoint.y,
-            })];
+            }), newIndex)];
             writeLayout(node, nextTiles, newIndex);
             setRegionStyle(tempRegion, nextTiles[newIndex]);
             scheduleCanvas(node);
@@ -846,6 +1060,9 @@ function renderEditor(node) {
     }
 
     actions.append(
+        createButton("Auto Tile", () => {
+            inferSmartTileLayout(node);
+        }),
         createButton("Add tile", () => {
             const base = tiles[selectedIndex] ?? { x0: 0.25, y0: 0.25, x1: 0.75, y1: 0.75 };
             const width = Math.max(0.18, Math.min(0.48, base.x1 - base.x0));
@@ -861,21 +1078,11 @@ function renderEditor(node) {
             renderEditor(node);
         }, tiles.length <= 1),
         createButton("Fill gaps", () => {
-            const nextTiles = tiles.map((tile) => ({ ...tile }));
-            let coverageState = analyzeCoverage(nextTiles);
-            while (coverageState.gaps.length && nextTiles.length < MAX_TILES) {
-                const previousArea = coverageState.uncoveredArea;
-                nextTiles.push(normalizeTile(node, coverageState.gaps[0]));
-                coverageState = analyzeCoverage(nextTiles);
-                if (coverageState.uncoveredArea >= previousArea - 1e-8) {
-                    nextTiles.pop();
-                    break;
-                }
-            }
-            node.ttpSmartTileStatus = coverageState.gaps.length
-                ? `${coverageState.gaps.length} gap(s) remain.`
+            const filled = fillTileGaps(node, tiles);
+            node.ttpSmartTileStatus = filled.coverage.gaps.length
+                ? `${filled.coverage.gaps.length} gap(s) remain.`
                 : "";
-            writeLayout(node, nextTiles, Math.min(tiles.length, nextTiles.length - 1));
+            writeLayout(node, filled.tiles, Math.min(tiles.length, filled.tiles.length - 1));
             renderEditor(node);
         }, !coverage.gaps.length || tiles.length >= MAX_TILES),
         createButton("Reset 2x2", () => {
@@ -902,6 +1109,8 @@ function renderEditor(node) {
 }
 
 function attachWidgetRefresh(node) {
+    setWidgetVisible(widgetByName(node, "auto_detect_request"), false);
+
     const imageWidget = widgetByName(node, "image");
     if (imageWidget && !imageWidget.ttpSmartTileWrapped) {
         const original = imageWidget.callback;
@@ -927,9 +1136,49 @@ function attachWidgetRefresh(node) {
     }
 }
 
+api.addEventListener("ttp-smart-tile-layout", (event) => {
+    applyInferenceResult(event.detail);
+});
+
+api.addEventListener("ttp-smart-tile-loop", (event) => {
+    applyLoopEvent(event.detail);
+});
+
 app.registerExtension({
     name: "ttp.smart_tile.interactive_crop",
     beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name === LOOP_SOURCE_NAME) {
+            const originalOnNodeCreated = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                originalOnNodeCreated?.apply(this, arguments);
+                setWidgetVisible(widgetByName(this, "restart_request"), false);
+                setWidgetVisible(widgetByName(this, "loop_request"), false);
+                if (!widgetByName(this, "process_all_tiles")) {
+                    this.addWidget("button", "process_all_tiles", "Process All Tiles", () => {
+                        queueSmartTileLoop(this, true);
+                    }, { serialize: false });
+                }
+                if (!widgetByName(this, "stop_tile_loop")) {
+                    this.addWidget("button", "stop_tile_loop", "Stop Tile Loop", () => {
+                        this.ttpSmartTileLoopActive = false;
+                        setLoopSourceStatus(this, "Stopped.");
+                    }, { serialize: false });
+                }
+                if (!widgetByName(this, "loop_status")) {
+                    this.addWidget("text", "loop_status", this.ttpSmartTileLoopStatus || "Idle.", () => {}, { serialize: false });
+                }
+            };
+            const originalOnConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function () {
+                originalOnConfigure?.apply(this, arguments);
+                requestAnimationFrame(() => {
+                    setWidgetVisible(widgetByName(this, "restart_request"), false);
+                    setWidgetVisible(widgetByName(this, "loop_request"), false);
+                });
+            };
+            return;
+        }
+
         if (nodeData.name !== NODE_NAME) {
             return;
         }

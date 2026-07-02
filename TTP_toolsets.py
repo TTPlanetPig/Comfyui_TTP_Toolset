@@ -1,17 +1,41 @@
 import json
 import os
+import base64
+import hashlib
+import urllib.request
 import cv2
 import numpy as np
 from PIL import Image, ImageFilter, ImageChops, ImageEnhance, ImageDraw, ImageOps
+from io import BytesIO
+from PIL.PngImagePlugin import PngInfo
 import folder_paths
 import node_helpers
 import torch
 import comfy.model_management
+import comfy.sd
 import comfy.samplers
 import comfy.sample
 import comfy.utils
 import latent_preview
 from typing import Any, List, Tuple, Optional, Union, Dict
+
+try:
+    from aiohttp import web
+    from server import PromptServer
+except Exception:
+    web = None
+    PromptServer = None
+
+try:
+    from comfy.cli_args import args
+except Exception:
+    class _TTPArgs:
+        disable_metadata = False
+
+    args = _TTPArgs()
+
+_TTP_SMART_TILE_LOOP_SESSIONS = {}
+_TTP_QWENVL3_MODEL_CACHE = {}
 
 def pil2tensor(image: Image) -> torch.Tensor:
     return torch.from_numpy(np.array(image).astype(np.float32) / 255.0).unsqueeze(0)
@@ -341,7 +365,7 @@ def _ttp_normalize_tile_box(tile, image_width, image_height, defaults):
     pad = _ttp_parse_margin_value(pad_value, max(image_width, image_height))
     blend = _ttp_parse_margin_value(blend_value, max(w, h))
 
-    return {
+    normalized = {
         "name": str(tile.get("name", f"tile_{tile.get('id', 0)}")),
         "core_box": [x, y, w, h],
         "pad": max(0, pad),
@@ -351,7 +375,16 @@ def _ttp_normalize_tile_box(tile, image_width, image_height, defaults):
         "strength": float(tile.get("strength", defaults.get("strength", 1.0))),
         "prompt_tag": str(tile.get("prompt_tag", tile.get("name", ""))),
         "align": bool(tile.get("align", defaults.get("align", False))),
+        "source": str(tile.get("source", defaults.get("source", "manual"))),
+        "label": str(tile.get("label", tile.get("name", defaults.get("label", "")))),
+        "score": float(tile.get("score", defaults.get("score", 1.0))),
+        "layer": int(tile.get("layer", defaults.get("layer", 0))),
+        "object_id": int(tile.get("object_id", tile.get("id", defaults.get("object_id", 0)))),
+        "occlusion_priority": float(tile.get("occlusion_priority", defaults.get("occlusion_priority", 0.0))),
     }
+    if isinstance(tile.get("object_mask"), dict):
+        normalized["object_mask"] = dict(tile["object_mask"])
+    return normalized
 
 
 def _ttp_expand_grid_tiles(grid, defaults):
@@ -477,6 +510,942 @@ def _ttp_create_feather_mask(width, height, feather):
     distance = np.minimum(np.minimum(distance_left, distance_right), np.minimum(distance_top, distance_bottom))
     mask = np.clip(distance / max(1, feather), 0.0, 1.0).astype(np.float32)
     return mask[:, :, None]
+
+
+def _ttp_create_sample_blend_mask(width, height, overlap_edges, feather, scale_x=1.0, scale_y=1.0):
+    mask = np.ones((height, width, 1), dtype=np.float32)
+    if feather <= 0:
+        return mask
+
+    def scaled_edge(name, scale, limit):
+        return _ttp_clamp(int(round(float(overlap_edges.get(name, 0)) * scale)), 0, limit)
+
+    left = scaled_edge("left", scale_x, width)
+    right = scaled_edge("right", scale_x, width)
+    top = scaled_edge("top", scale_y, height)
+    bottom = scaled_edge("bottom", scale_y, height)
+
+    if left > 0:
+        blend = min(int(feather), left, width)
+        zero_end = max(0, left - blend)
+        if zero_end > 0:
+            mask[:, :zero_end, :] = 0.0
+        if blend > 0:
+            ramp = np.linspace(0.0, 1.0, blend, dtype=np.float32)[None, :, None]
+            mask[:, zero_end:left, :] *= ramp
+
+    if right > 0:
+        blend = min(int(feather), right, width)
+        start = max(0, width - right)
+        blend_end = min(width, start + blend)
+        if blend_end > start:
+            ramp = np.linspace(1.0, 0.0, blend_end - start, dtype=np.float32)[None, :, None]
+            mask[:, start:blend_end, :] *= ramp
+        if blend_end < width:
+            mask[:, blend_end:, :] = 0.0
+
+    if top > 0:
+        blend = min(int(feather), top, height)
+        zero_end = max(0, top - blend)
+        if zero_end > 0:
+            mask[:zero_end, :, :] = 0.0
+        if blend > 0:
+            ramp = np.linspace(0.0, 1.0, blend, dtype=np.float32)[:, None, None]
+            mask[zero_end:top, :, :] *= ramp
+
+    if bottom > 0:
+        blend = min(int(feather), bottom, height)
+        start = max(0, height - bottom)
+        blend_end = min(height, start + blend)
+        if blend_end > start:
+            ramp = np.linspace(1.0, 0.0, blend_end - start, dtype=np.float32)[:, None, None]
+            mask[start:blend_end, :, :] *= ramp
+        if blend_end < height:
+            mask[blend_end:, :, :] = 0.0
+
+    return mask
+
+
+def _ttp_mask_tensor_to_pil_list(masks, image_width, image_height):
+    if masks is None:
+        return []
+    if isinstance(masks, Image.Image):
+        return [masks.convert("L").resize((image_width, image_height), Image.Resampling.BILINEAR)]
+    if isinstance(masks, (list, tuple)):
+        result = []
+        for mask in masks:
+            result.extend(_ttp_mask_tensor_to_pil_list(mask, image_width, image_height))
+        return result
+
+    array = None
+    try:
+        tensor = masks.detach() if hasattr(masks, "detach") else masks
+        tensor = tensor.cpu() if hasattr(tensor, "cpu") else tensor
+        array = tensor.numpy() if hasattr(tensor, "numpy") else np.array(tensor)
+    except Exception:
+        return []
+
+    array = np.asarray(array)
+    if array.ndim == 4:
+        if array.shape[1] == 1:
+            array = array[:, 0, :, :]
+        elif array.shape[-1] == 1:
+            array = array[:, :, :, 0]
+    if array.ndim == 2:
+        array = array[None, :, :]
+    if array.ndim != 3:
+        return []
+
+    result = []
+    for item in array:
+        item = np.nan_to_num(item.astype(np.float32), nan=0.0, posinf=1.0, neginf=0.0)
+        if item.max() > 1.0 or item.min() < 0.0:
+            item = np.clip(item, 0.0, 255.0) / 255.0
+        item = np.clip(item, 0.0, 1.0)
+        pil = Image.fromarray((item * 255.0).astype(np.uint8), mode="L")
+        if pil.size != (image_width, image_height):
+            pil = pil.resize((image_width, image_height), Image.Resampling.BILINEAR)
+        result.append(pil)
+    return result
+
+
+def _ttp_encode_object_mask_data(mask_images, mask_indices, box):
+    if not mask_images or not mask_indices:
+        return None
+    x0, y0, x1, y1 = [int(round(value)) for value in box]
+    width = max(1, x1 - x0)
+    height = max(1, y1 - y0)
+    combined = Image.new("L", (width, height), 0)
+    for mask_index in mask_indices:
+        if mask_index < 0 or mask_index >= len(mask_images):
+            continue
+        cropped = mask_images[mask_index].crop((x0, y0, x1, y1)).convert("L")
+        if cropped.getbbox() is None:
+            continue
+        combined = ImageChops.lighter(combined, cropped)
+    if combined.getbbox() is None:
+        return None
+    buffer = BytesIO()
+    combined.save(buffer, format="PNG", optimize=True)
+    return {
+        "format": "png_base64",
+        "box": [x0, y0, width, height],
+        "width": width,
+        "height": height,
+        "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+    }
+
+
+def _ttp_decode_object_mask_data(mask_data):
+    if not isinstance(mask_data, dict) or mask_data.get("format") != "png_base64":
+        return None
+    try:
+        raw = base64.b64decode(str(mask_data.get("data", "")))
+        return Image.open(BytesIO(raw)).convert("L")
+    except Exception:
+        return None
+
+
+def _ttp_tile_object_mask_array(tile, out_width, out_height, mask_blend_mode="mask_feather", feather=0):
+    if str(mask_blend_mode) == "off":
+        return None
+    mask_data = tile.get("object_mask")
+    mask_pil = _ttp_decode_object_mask_data(mask_data)
+    if mask_pil is None:
+        return None
+
+    sx, sy, sw, sh = tile["sample_box"]
+    mx, my, mw, mh = [int(round(value)) for value in mask_data.get("box", [sx, sy, sw, sh])]
+    source_mask = Image.new("L", (max(1, int(sw)), max(1, int(sh))), 0)
+    if mask_pil.size != (max(1, int(mw)), max(1, int(mh))):
+        mask_pil = mask_pil.resize((max(1, int(mw)), max(1, int(mh))), Image.Resampling.BILINEAR)
+
+    paste_x = mx - int(sx)
+    paste_y = my - int(sy)
+    clip_left = max(0, -paste_x)
+    clip_top = max(0, -paste_y)
+    clip_right = min(mask_pil.width, source_mask.width - paste_x)
+    clip_bottom = min(mask_pil.height, source_mask.height - paste_y)
+    if clip_right <= clip_left or clip_bottom <= clip_top:
+        return None
+    source_mask.paste(
+        mask_pil.crop((clip_left, clip_top, clip_right, clip_bottom)),
+        (paste_x + clip_left, paste_y + clip_top),
+    )
+    source_mask = source_mask.resize((out_width, out_height), Image.Resampling.BILINEAR)
+    if str(mask_blend_mode) in ("auto", "mask_feather"):
+        radius = max(0.0, min(64.0, float(feather) * 0.35))
+        if radius > 0:
+            source_mask = source_mask.filter(ImageFilter.GaussianBlur(radius=radius))
+    array = np.array(source_mask).astype(np.float32) / 255.0
+    return array[:, :, None]
+
+
+def _ttp_alignment_weight_mask(mask, mode="mask_edge_match"):
+    mask_2d = np.clip(np.asarray(mask[:, :, 0], dtype=np.float32), 0.0, 1.0)
+    if str(mode) == "edge_match":
+        height, width = mask_2d.shape
+        yy, xx = np.mgrid[0:height, 0:width]
+        distance = np.minimum(np.minimum(xx, width - 1 - xx), np.minimum(yy, height - 1 - yy))
+        edge = np.clip(1.0 - distance.astype(np.float32) / max(1.0, min(width, height) * 0.08), 0.0, 1.0)
+        return (edge * mask_2d).astype(np.float32)
+    band = 1.0 - np.abs(mask_2d * 2.0 - 1.0)
+    band = np.where((mask_2d > 0.02) & (mask_2d < 0.98), band, 0.0)
+    if float(band.sum()) < 16.0:
+        band = np.where(mask_2d > 0.02, np.minimum(mask_2d, 1.0 - mask_2d * 0.5), 0.0)
+    return band.astype(np.float32)
+
+
+def _ttp_find_pixel_alignment_offset(region, reference, weights, out_x, out_y, mask, radius=0, mode="off"):
+    radius = max(0, int(radius))
+    if radius <= 0 or str(mode) == "off":
+        return 0, 0
+    if region.size == 0 or reference.size == 0:
+        return 0, 0
+
+    align_weights = _ttp_alignment_weight_mask(mask, mode)
+    if float(align_weights.sum()) < 16.0:
+        return 0, 0
+
+    height, width = region.shape[:2]
+    best_score = None
+    best_offset = (0, 0)
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            rx0 = max(0, out_x + dx)
+            ry0 = max(0, out_y + dy)
+            rx1 = min(reference.shape[1], out_x + dx + width)
+            ry1 = min(reference.shape[0], out_y + dy + height)
+            if rx1 <= rx0 or ry1 <= ry0:
+                continue
+
+            tx0 = rx0 - (out_x + dx)
+            ty0 = ry0 - (out_y + dy)
+            tx1 = tx0 + (rx1 - rx0)
+            ty1 = ty0 + (ry1 - ry0)
+            local_weight = align_weights[ty0:ty1, tx0:tx1]
+            if weights is not None:
+                local_weight = local_weight * (weights[ry0:ry1, rx0:rx1, 0] > 1e-6).astype(np.float32)
+            weight_sum = float(local_weight.sum())
+            if weight_sum < 16.0:
+                continue
+
+            diff = region[ty0:ty1, tx0:tx1] - reference[ry0:ry1, rx0:rx1]
+            score = float((np.mean(diff * diff, axis=2) * local_weight).sum() / weight_sum)
+            score += (abs(dx) + abs(dy)) * 1e-5
+            if best_score is None or score < best_score:
+                best_score = score
+                best_offset = (dx, dy)
+    return best_offset
+
+
+def _ttp_bbox_to_xyxy(box):
+    if isinstance(box, dict):
+        if all(key in box for key in ("x", "y", "width", "height")):
+            return [
+                float(box.get("x", 0)),
+                float(box.get("y", 0)),
+                float(box.get("x", 0)) + float(box.get("width", 0)),
+                float(box.get("y", 0)) + float(box.get("height", 0)),
+            ]
+        raw = box.get("bbox_2d", box.get("bbox", box.get("box")))
+        if raw is not None:
+            return _ttp_bbox_to_xyxy(raw)
+    if isinstance(box, (list, tuple)) and len(box) >= 4:
+        return [float(box[0]), float(box[1]), float(box[2]), float(box[3])]
+    return None
+
+
+def _ttp_flatten_bboxes(bboxes):
+    if bboxes is None:
+        return []
+    if isinstance(bboxes, dict):
+        return [bboxes]
+    if not isinstance(bboxes, (list, tuple)):
+        return []
+    result = []
+    for item in bboxes:
+        if isinstance(item, (list, tuple)) and item and not isinstance(item[0], (int, float, dict)):
+            result.extend(_ttp_flatten_bboxes(item))
+        elif isinstance(item, (list, tuple)) and item and isinstance(item[0], dict):
+            result.extend(item)
+        else:
+            result.append(item)
+    return result
+
+
+def _ttp_clamp_box_xyxy(box, image_width, image_height, min_size=8):
+    x0, y0, x1, y1 = box
+    x0, x1 = sorted((x0, x1))
+    y0, y1 = sorted((y0, y1))
+    x0 = _ttp_clamp(int(round(x0)), 0, max(0, image_width - 1))
+    y0 = _ttp_clamp(int(round(y0)), 0, max(0, image_height - 1))
+    x1 = _ttp_clamp(int(round(x1)), x0 + 1, image_width)
+    y1 = _ttp_clamp(int(round(y1)), y0 + 1, image_height)
+    if x1 - x0 < min_size:
+        grow = int(np.ceil((min_size - (x1 - x0)) / 2))
+        x0 = max(0, x0 - grow)
+        x1 = min(image_width, x1 + grow)
+    if y1 - y0 < min_size:
+        grow = int(np.ceil((min_size - (y1 - y0)) / 2))
+        y0 = max(0, y0 - grow)
+        y1 = min(image_height, y1 + grow)
+    return [x0, y0, x1, y1]
+
+
+def _ttp_expand_box_xyxy(box, image_width, image_height, padding):
+    x0, y0, x1, y1 = box
+    return _ttp_clamp_box_xyxy(
+        [x0 - padding, y0 - padding, x1 + padding, y1 + padding],
+        image_width,
+        image_height,
+    )
+
+
+def _ttp_box_iou(a, b):
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    inter = max(0, ix1 - ix0) * max(0, iy1 - iy0)
+    if inter <= 0:
+        return 0.0
+    area_a = max(1, (ax1 - ax0) * (ay1 - ay0))
+    area_b = max(1, (bx1 - bx0) * (by1 - by0))
+    return inter / max(1, area_a + area_b - inter)
+
+
+def _ttp_merge_overlapping_boxes(boxes, threshold=0.18):
+    merged = []
+    for item in boxes:
+        box = item["box"]
+        target = None
+        for existing in merged:
+            if _ttp_box_iou(box, existing["box"]) >= threshold:
+                target = existing
+                break
+        if target is None:
+            merged.append({**item, "box": list(box)})
+            continue
+        ex = target["box"]
+        target["box"] = [min(ex[0], box[0]), min(ex[1], box[1]), max(ex[2], box[2]), max(ex[3], box[3])]
+        target["score"] = max(float(target.get("score", 1.0)), float(item.get("score", 1.0)))
+        target["mask_indices"] = sorted(set(target.get("mask_indices", []) + item.get("mask_indices", [])))
+        if not target.get("label") and item.get("label"):
+            target["label"] = item["label"]
+    return merged
+
+
+def _ttp_boxes_to_auto_layout(
+    bboxes,
+    image_width,
+    image_height,
+    default_pad=128,
+    default_blend=64,
+    object_padding=96,
+    max_tiles=16,
+    include_background=True,
+    allow_object_overlap=True,
+    masks=None,
+):
+    mask_images = _ttp_mask_tensor_to_pil_list(masks, image_width, image_height)
+    raw_boxes = []
+    for index, item in enumerate(_ttp_flatten_bboxes(bboxes)):
+        box = _ttp_bbox_to_xyxy(item)
+        if box is None:
+            continue
+        score = float(item.get("score", 1.0)) if isinstance(item, dict) else 1.0
+        label = str(item.get("label", item.get("name", f"object_{index + 1}"))) if isinstance(item, dict) else f"object_{index + 1}"
+        clamped = _ttp_clamp_box_xyxy(box, image_width, image_height)
+        area = (clamped[2] - clamped[0]) * (clamped[3] - clamped[1])
+        if area <= 0:
+            continue
+        raw_boxes.append({"box": clamped, "score": score, "label": label, "area": area, "mask_indices": [index]})
+
+    raw_boxes.sort(key=lambda value: (float(value.get("score", 1.0)), value["area"]), reverse=True)
+    merged_boxes = _ttp_merge_overlapping_boxes(raw_boxes[: max(1, int(max_tiles))])
+
+    tiles = []
+    if include_background:
+        tiles.append({
+            "name": "auto_background",
+            "x0": 0.0,
+            "y0": 0.0,
+            "x1": 1.0,
+            "y1": 1.0,
+            "pad": 0,
+            "blend": max(0, int(default_blend)),
+            "priority": 5,
+            "importance": 0.35,
+            "source": "auto",
+            "label": "background",
+            "layer": 0,
+            "object_id": 0,
+            "occlusion_priority": 0,
+        })
+
+    for object_index, item in enumerate(merged_boxes[: max(1, int(max_tiles))], start=1):
+        box = _ttp_expand_box_xyxy(item["box"], image_width, image_height, int(max(0, object_padding)))
+        x0, y0, x1, y1 = box
+        object_area = (x1 - x0) * (y1 - y0)
+        image_area = max(1, image_width * image_height)
+        priority = 70 + min(80, int(100 * object_area / image_area)) + int(float(item.get("score", 1.0)) * 20)
+        tile = {
+            "name": f"auto_{item.get('label', 'object')}_{object_index}",
+            "x0": x0 / image_width,
+            "y0": y0 / image_height,
+            "x1": x1 / image_width,
+            "y1": y1 / image_height,
+            "pad": int(default_pad) if allow_object_overlap else max(0, int(default_pad) // 2),
+            "blend": int(default_blend),
+            "priority": priority,
+            "importance": 1.0,
+            "source": "auto",
+            "label": item.get("label", f"object_{object_index}"),
+            "score": float(item.get("score", 1.0)),
+            "layer": 2,
+            "object_id": object_index,
+            "occlusion_priority": 100 + object_index,
+        }
+        object_mask = _ttp_encode_object_mask_data(mask_images, item.get("mask_indices", []), box)
+        if object_mask is not None:
+            tile["object_mask"] = object_mask
+        tiles.append(tile)
+
+    if len(tiles) == (1 if include_background else 0):
+        tiles.extend([
+            {"name": "auto_tile_1", "x0": 0.0, "y0": 0.0, "x1": 0.5, "y1": 0.5, "source": "auto", "layer": 1, "occlusion_priority": 10},
+            {"name": "auto_tile_2", "x0": 0.5, "y0": 0.0, "x1": 1.0, "y1": 0.5, "source": "auto", "layer": 1, "occlusion_priority": 10},
+            {"name": "auto_tile_3", "x0": 0.0, "y0": 0.5, "x1": 0.5, "y1": 1.0, "source": "auto", "layer": 1, "occlusion_priority": 10},
+            {"name": "auto_tile_4", "x0": 0.5, "y0": 0.5, "x1": 1.0, "y1": 1.0, "source": "auto", "layer": 1, "occlusion_priority": 10},
+        ])
+
+    return json.dumps({
+        "version": 1,
+        "type": "ttp_smart_tile_interactive_layout",
+        "source_size": [image_width, image_height],
+        "defaults": {
+            "pad": int(default_pad),
+            "blend": int(default_blend),
+            "priority": 50,
+            "importance": 1.0,
+            "source": "auto",
+        },
+        "tiles": tiles[: max(1, int(max_tiles)) + (1 if include_background else 0)],
+    }, separators=(",", ":"))
+
+
+def _ttp_draw_auto_layout_preview(pil_image, layout_json):
+    preview = pil_image.copy().convert("RGB")
+    draw = ImageDraw.Draw(preview)
+    width, height = preview.size
+    colors = ["#38bdf8", "#f97316", "#22c55e", "#e879f9", "#facc15", "#fb7185", "#a3e635", "#60a5fa"]
+    try:
+        layout = json.loads(layout_json)
+    except Exception:
+        return pil2tensor(preview)
+    for index, tile in enumerate(layout.get("tiles", [])):
+        box = _ttp_normalize_tile_box(tile, width, height, {})
+        x, y, w, h = box["core_box"]
+        color = colors[index % len(colors)]
+        draw.rectangle((x, y, x + w, y + h), outline=color, width=3)
+        draw.text((x + 5, y + 5), str(tile.get("label", tile.get("name", index + 1))), fill=color)
+    return pil2tensor(preview)
+
+
+def _ttp_tensor_from_pil_batch(pil_image):
+    return pil2tensor(pil_image.convert("RGB"))
+
+
+def _ttp_image_tensor_size(image_tensor):
+    shape = image_tensor.shape
+    if len(shape) == 4:
+        return int(shape[2]), int(shape[1])
+    if len(shape) == 3:
+        return int(shape[1]), int(shape[0])
+    raise ValueError("Expected an IMAGE tensor with shape [H,W,C] or [1,H,W,C].")
+
+
+def _ttp_image_tensor_to_pil(image_tensor):
+    if len(image_tensor.shape) == 3:
+        return tensor2pil(image_tensor.unsqueeze(0)).convert("RGB")
+    return tensor2pil(image_tensor).convert("RGB")
+
+
+def _ttp_first_image_tensor(image_tensor):
+    if len(image_tensor.shape) == 4:
+        return image_tensor[0].unsqueeze(0)
+    if len(image_tensor.shape) == 3:
+        return image_tensor.unsqueeze(0)
+    raise ValueError("Expected an IMAGE tensor with shape [B,H,W,C] or [H,W,C].")
+
+
+def _ttp_resize_pil_to_round(image, scale=2.0, round_to=8, resampling="lanczos"):
+    filters = {
+        "nearest": Image.Resampling.NEAREST,
+        "bilinear": Image.Resampling.BILINEAR,
+        "bicubic": Image.Resampling.BICUBIC,
+        "lanczos": Image.Resampling.LANCZOS,
+    }
+    target_width = max(1, int(round(image.width * float(scale))))
+    target_height = max(1, int(round(image.height * float(scale))))
+    round_to = max(1, int(round_to))
+    target_width = max(round_to, _ttp_round_to(target_width, round_to))
+    target_height = max(round_to, _ttp_round_to(target_height, round_to))
+    return image.resize((target_width, target_height), filters.get(str(resampling), Image.Resampling.LANCZOS))
+
+
+def _ttp_align_pil_to_aspect(image, expected_width, expected_height, mode="center_crop"):
+    expected_width = max(1, int(expected_width))
+    expected_height = max(1, int(expected_height))
+    if mode == "off" or image.width <= 0 or image.height <= 0:
+        return image
+    if mode == "resize":
+        return image.resize((expected_width, expected_height), Image.Resampling.LANCZOS)
+
+    target_aspect = expected_width / max(1, expected_height)
+    source_aspect = image.width / max(1, image.height)
+    if mode in ("center_crop", "crop_or_pad") and abs(source_aspect - target_aspect) > 1e-4:
+        if source_aspect > target_aspect:
+            crop_width = max(1, int(round(image.height * target_aspect)))
+            left = max(0, (image.width - crop_width) // 2)
+            image = image.crop((left, 0, left + crop_width, image.height))
+        else:
+            crop_height = max(1, int(round(image.width / target_aspect)))
+            top = max(0, (image.height - crop_height) // 2)
+            image = image.crop((0, top, image.width, top + crop_height))
+
+    if mode == "crop_or_pad":
+        pad_width = max(image.width, int(round(image.height * target_aspect)))
+        pad_height = max(image.height, int(round(image.width / target_aspect)))
+        if pad_width != image.width or pad_height != image.height:
+            canvas = Image.new("RGB", (pad_width, pad_height))
+            canvas.paste(image, ((pad_width - image.width) // 2, (pad_height - image.height) // 2))
+            image = canvas
+
+    return image.resize((expected_width, expected_height), Image.Resampling.LANCZOS)
+
+
+def _ttp_clone_tile_set(tile_set):
+    tile_meta = tile_set.get("tile_meta", {})
+    return {
+        "version": int(tile_set.get("version", 1)),
+        "type": "ttp_smart_tile_set",
+        "original_size": list(tile_set.get("original_size", tile_meta.get("original_size", [0, 0]))),
+        "tile_meta": {
+            "version": int(tile_meta.get("version", 3)),
+            "type": "ttp_smart_tile",
+            "storage": "tile_set",
+            "original_size": list(tile_meta.get("original_size", tile_set.get("original_size", [0, 0]))),
+            "tiles": [dict(tile) for tile in tile_meta.get("tiles", [])],
+        },
+        "tile_images": list(tile_set.get("tile_images", [])),
+        "positions": list(tile_set.get("positions", [])),
+    }
+
+
+def _ttp_tile_set_fingerprint(tile_set):
+    tile_meta = tile_set.get("tile_meta", {})
+    tiles = tile_meta.get("tiles", [])
+    return json.dumps({
+        "size": tile_set.get("original_size", tile_meta.get("original_size")),
+        "count": len(tile_set.get("tile_images", [])),
+        "boxes": [tile.get("sample_box") for tile in tiles],
+        "names": [tile.get("name") for tile in tiles],
+        "masks": [bool(tile.get("object_mask")) for tile in tiles],
+        "prompts": [
+            {
+                "prompt": tile.get("prompt", ""),
+                "negative": tile.get("negative", ""),
+                "caption": tile.get("caption", ""),
+                "label": tile.get("label", ""),
+                "prompt_tag": tile.get("prompt_tag", ""),
+                "prompt_source": tile.get("prompt_source", ""),
+                "tile_hash": tile.get("tile_hash", ""),
+            }
+            for tile in tiles
+        ],
+    }, sort_keys=True)
+
+
+def _ttp_validate_tile_set(tile_set):
+    if not isinstance(tile_set, dict) or tile_set.get("type") != "ttp_smart_tile_set":
+        raise ValueError("tile_set must come from TTP Smart Tile Interactive Crop (Experimental)")
+    tile_images = tile_set.get("tile_images", [])
+    tile_meta = tile_set.get("tile_meta", {})
+    tiles_info = tile_meta.get("tiles", [])
+    if not tile_images:
+        raise ValueError("tile_set contains no tile images.")
+    if len(tile_images) != len(tiles_info):
+        raise ValueError(f"tile_set images ({len(tile_images)}) do not match tile metadata ({len(tiles_info)}).")
+    return tile_images, tile_meta, tiles_info
+
+
+def _ttp_send_smart_tile_loop_event(task, done=False, message=""):
+    if PromptServer is None or not isinstance(task, dict):
+        return
+    payload = {
+        "source_node_id": str(task.get("source_node_id", "")),
+        "session_id": str(task.get("session_id", "")),
+        "index": int(task.get("index", 0)),
+        "count": int(task.get("count", 0)),
+        "done": bool(done),
+        "message": str(message or ""),
+    }
+    try:
+        PromptServer.instance.send_sync("ttp-smart-tile-loop", payload, PromptServer.instance.client_id)
+    except Exception:
+        pass
+
+
+def _ttp_pil_to_data_url(image):
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def _ttp_model_base_dirs(model_type="text_encoders"):
+    dirs = []
+    try:
+        names_and_paths = getattr(folder_paths, "folder_names_and_paths", {})
+        for path in names_and_paths.get(model_type, [[], set()])[0]:
+            dirs.append(path)
+    except Exception:
+        pass
+    try:
+        models_dir = getattr(folder_paths, "models_dir", None)
+        if models_dir:
+            dirs.append(os.path.join(models_dir, model_type))
+    except Exception:
+        pass
+    return [path for index, path in enumerate(dirs) if path and path not in dirs[:index] and os.path.isdir(path)]
+
+
+def _ttp_qwenvl_safetensor_files():
+    files = []
+    for base_dir in _ttp_model_base_dirs("text_encoders"):
+        for root, _dirs, names in os.walk(base_dir):
+            for name in names:
+                if not name.lower().endswith((".safetensors", ".sft")):
+                    continue
+                rel = os.path.relpath(os.path.join(root, name), base_dir).replace("\\", "/")
+                files.append(rel)
+    return sorted(set(files)) or ["put_qwenvl3_model_in_models_text_encoders.safetensors"]
+
+
+def _ttp_resolve_model_file(model_file, model_type="text_encoders"):
+    model_file = str(model_file or "").replace("\\", "/")
+    for base_dir in _ttp_model_base_dirs(model_type):
+        candidate = os.path.abspath(os.path.join(base_dir, model_file))
+        try:
+            if os.path.commonpath([os.path.abspath(base_dir), candidate]) != os.path.abspath(base_dir):
+                continue
+        except ValueError:
+            continue
+        if os.path.isfile(candidate):
+            return candidate
+    raise FileNotFoundError(f"Model file not found in ComfyUI models/{model_type}: {model_file}")
+
+
+def _ttp_load_qwenvl3_local_model(model_file, model_family="auto", device_mode="default"):
+    model_path = _ttp_resolve_model_file(model_file, "text_encoders")
+    model_family = str(model_family or "auto")
+    # For visual tagging we should not expose downstream image-model choices.
+    # QWEN_IMAGE is ComfyUI's native single-file Qwen-VL text encoder entry;
+    # Qwen3.5-VL variants are still auto-detected from the safetensors keys.
+    clip_type_name = "QWEN_IMAGE"
+    cache_key = json.dumps({
+        "path": model_path,
+        "device_mode": device_mode,
+        "model_family": model_family,
+    }, sort_keys=True)
+    if cache_key in _TTP_QWENVL3_MODEL_CACHE:
+        return _TTP_QWENVL3_MODEL_CACHE[cache_key]
+
+    model_options = {}
+    if str(device_mode) == "cpu":
+        model_options["load_device"] = model_options["offload_device"] = torch.device("cpu")
+    clip = comfy.sd.load_clip(
+        ckpt_paths=[model_path],
+        embedding_directory=folder_paths.get_folder_paths("embeddings"),
+        clip_type=comfy.sd.CLIPType.QWEN_IMAGE,
+        model_options=model_options,
+    )
+
+    loaded = {
+        "type": "ttp_qwenvl3_model",
+        "model_file": model_file,
+        "model_path": model_path,
+        "clip_type": clip_type_name,
+        "model_family": model_family,
+        "clip": clip,
+    }
+    _TTP_QWENVL3_MODEL_CACHE[cache_key] = loaded
+    return loaded
+
+
+def _ttp_qwen_vl_local_chat(local_model, messages, max_new_tokens=256, temperature=0.2, seed=0):
+    if not isinstance(local_model, dict) or local_model.get("type") != "ttp_qwenvl3_model":
+        raise ValueError("qwen_vl_local mode requires TTP QwenVL3 Local Loader output.")
+    clip = local_model["clip"]
+
+    system_parts = []
+    user_parts = []
+    images = []
+    for message in messages:
+        role = str(message.get("role", "user"))
+        content = message.get("content", [])
+        if isinstance(content, str):
+            if role == "system":
+                system_parts.append(content)
+            else:
+                user_parts.append(content)
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    if role == "system":
+                        system_parts.append(str(item.get("text", "")))
+                    else:
+                        user_parts.append(str(item.get("text", "")))
+                if isinstance(item, dict) and item.get("type") == "image":
+                    images.append(item.get("image"))
+                elif isinstance(item, dict) and item.get("type") == "image_url":
+                    url = item.get("image_url", {}).get("url", "")
+                    if str(url).startswith("data:image"):
+                        raw = base64.b64decode(str(url).split(",", 1)[1])
+                        image = Image.open(BytesIO(raw)).convert("RGB")
+                        images.append(image)
+    system_prompt = "\n".join(part for part in system_parts if part).strip()
+    user_prompt = "\n".join(part for part in user_parts if part).strip()
+    image_tensors = [pil2tensor(image.convert("RGB")) if isinstance(image, Image.Image) else image for image in images]
+    tokenize_kwargs = {}
+    image_prompt = ""
+    if image_tensors:
+        image_prompt = "".join(f"Picture {index + 1}: <|vision_start|><|image_pad|><|vision_end|>\n" for index in range(len(image_tensors)))
+        tokenize_kwargs["images"] = image_tensors
+    if system_prompt:
+        tokenize_kwargs["llama_template"] = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{{}}<|im_end|>\n<|im_start|>assistant\n"
+    prompt = f"{image_prompt}{user_prompt}".strip()
+    tokens = clip.tokenize(prompt, **tokenize_kwargs)
+    do_sample = float(temperature) > 0
+    output_ids = clip.generate(
+        tokens,
+        do_sample=do_sample,
+        max_length=int(max_new_tokens),
+        temperature=float(temperature),
+        seed=int(seed if seed is not None else 0),
+    )
+    text = clip.decode(output_ids, skip_special_tokens=True)
+    return _ttp_clean_qwen_vl_response(str(text), prompt)
+
+
+def _ttp_encode_text_conditioning(clip, text):
+    if clip is None:
+        return []
+    tokens = clip.tokenize(str(text or ""))
+    return clip.encode_from_tokens_scheduled(tokens)
+
+
+def _ttp_tile_hash(image_tensor):
+    pil = _ttp_image_tensor_to_pil(image_tensor)
+    arr = np.array(pil.resize((min(128, pil.width), min(128, pil.height)), Image.Resampling.BILINEAR))
+    return hashlib.sha256(arr.tobytes()).hexdigest()[:16]
+
+
+def _ttp_extract_json_object(text):
+    text = str(text or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except Exception:
+            pass
+    return {}
+
+
+def _ttp_clean_qwen_vl_response(text, prompt=""):
+    text = str(text or "").strip()
+    for marker in ("<|im_start|>assistant", "assistant\n", "assistant:"):
+        if marker in text:
+            text = text.split(marker)[-1].strip()
+    if prompt and text.startswith(prompt):
+        text = text[len(prompt):].strip()
+    if "<|im_end|>" in text:
+        text = text.split("<|im_end|>", 1)[0].strip()
+    return text.strip()
+
+
+def _ttp_qwen_response_looks_like_instruction(text):
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return True
+    instruction_fragments = [
+        "analyze this tile",
+        "return json",
+        "return strict json",
+        "refine this tile",
+        "preserve all visible visual facts",
+        "do not invent",
+        "write prompt fields",
+    ]
+    return any(fragment in lowered for fragment in instruction_fragments)
+
+
+def _ttp_parse_qwen_tile_record(raw, index):
+    parsed = _ttp_extract_json_object(raw)
+    if not isinstance(parsed, dict) or not parsed:
+        snippet = str(raw or "").strip().replace("\n", " ")[:240]
+        raise RuntimeError(f"QwenVL did not return JSON for tile {index}. Raw: {snippet}")
+
+    label = str(parsed.get("label", "")).strip()
+    caption = str(parsed.get("caption", "")).strip()
+    prompt = str(parsed.get("prompt", "")).strip()
+    negative = str(parsed.get("negative", "")).strip()
+    if not caption and not prompt:
+        snippet = str(raw or "").strip().replace("\n", " ")[:240]
+        raise RuntimeError(f"QwenVL JSON for tile {index} is missing caption/prompt. Raw: {snippet}")
+    if _ttp_qwen_response_looks_like_instruction(caption) or _ttp_qwen_response_looks_like_instruction(prompt):
+        snippet = str(raw or "").strip().replace("\n", " ")[:240]
+        raise RuntimeError(f"QwenVL appears to have echoed instructions for tile {index}. Raw: {snippet}")
+    return {
+        "label": label,
+        "caption": caption,
+        "prompt": prompt,
+        "negative": negative,
+    }
+
+
+def _ttp_compose_tile_prompt(tile, caption, global_prompt, global_negative, merge_mode):
+    label = str(tile.get("label", tile.get("name", "tile")) or "tile")
+    caption = str(caption or "").strip()
+    pieces = []
+    if merge_mode in ("global_plus_caption", "global_plus_label_plus_caption") and str(global_prompt or "").strip():
+        pieces.append(str(global_prompt).strip())
+    if merge_mode == "global_plus_label_plus_caption" and label:
+        pieces.append(label)
+    if caption:
+        pieces.append(caption)
+    if not pieces:
+        pieces.append(label)
+    negative = str(global_negative or "").strip()
+    return ", ".join(piece for piece in pieces if piece), negative
+
+
+def _ttp_template_prompt_for_tile(tile, global_prompt, global_negative, merge_mode):
+    label = str(tile.get("label", tile.get("name", "tile")) or "tile").lower()
+    source = str(tile.get("source", "manual") or "manual")
+    x, y, w, h = tile.get("sample_box", tile.get("core_box", [0, 0, 1, 1]))
+    area_hint = "small detail tile" if int(w) * int(h) < 160000 else "large context tile"
+    if "face" in label or "head" in label:
+        caption = "detailed face region, sharp eyes, clean skin texture, consistent identity"
+        prompt_label = "face"
+    elif "hand" in label:
+        caption = "detailed hands, natural fingers, clean anatomy, consistent lighting"
+        prompt_label = "hands"
+    elif "text" in label:
+        caption = "sharp readable text, clean edges, preserved typography"
+        prompt_label = "text"
+    elif "background" in label:
+        caption = "clean background, consistent lighting, coherent texture"
+        prompt_label = "background"
+    else:
+        caption = f"{area_hint}, local visual detail, consistent style, coherent texture"
+        prompt_label = label or source
+    prompt, negative = _ttp_compose_tile_prompt({**tile, "label": prompt_label}, caption, global_prompt, global_negative, merge_mode)
+    return {
+        "label": prompt_label,
+        "caption": caption,
+        "prompt": prompt,
+        "negative": negative,
+    }
+
+
+def _ttp_qwen_vl_chat(endpoint_url, model_name, messages, max_new_tokens=256, temperature=0.2):
+    payload = {
+        "model": model_name,
+        "messages": messages,
+        "max_tokens": int(max_new_tokens),
+        "temperature": float(temperature),
+    }
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        str(endpoint_url),
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=600) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    try:
+        return result["choices"][0]["message"]["content"]
+    except Exception as exc:
+        raise RuntimeError("Unexpected QwenVL API response.") from exc
+
+
+def _ttp_apply_color_transfer(image_tensor, ref_tensor, method, strength):
+    if method == "off" or strength <= 0:
+        return image_tensor
+    try:
+        from comfy_extras.nodes_post_processing import ColorTransfer
+    except Exception as exc:
+        raise RuntimeError("ComfyUI Transfer Color is unavailable; set color_correction to off.") from exc
+
+    result = ColorTransfer.execute(
+        image_tensor,
+        ref_tensor,
+        method,
+        {"source_stats": "per_frame", "target_index": 0},
+        float(strength),
+    )
+    if isinstance(result, (tuple, list)):
+        return result[0]
+    if hasattr(result, "result"):
+        return result.result[0]
+    try:
+        return result[0]
+    except Exception as exc:
+        raise RuntimeError("Unexpected Transfer Color result from ComfyUI.") from exc
+
+
+def _ttp_apply_local_mean_std_color(region, reference, mask=None, strength=1.0):
+    strength = float(np.clip(float(strength), 0.0, 1.0))
+    if strength <= 0:
+        return region
+
+    source = np.asarray(region, dtype=np.float32)
+    target = np.asarray(reference, dtype=np.float32)
+    if source.shape != target.shape or source.size == 0:
+        return source
+
+    if mask is None:
+        weights = np.ones(source.shape[:2], dtype=np.float32)
+    else:
+        weights = np.asarray(mask[:, :, 0] if getattr(mask, "ndim", 0) == 3 else mask, dtype=np.float32)
+        weights = np.clip(weights, 0.0, 1.0)
+    if float(weights.sum()) < 16.0:
+        weights = np.ones(source.shape[:2], dtype=np.float32)
+
+    weights_3 = weights[:, :, None]
+    weight_sum = max(1e-6, float(weights.sum()))
+    source_mean = (source * weights_3).sum(axis=(0, 1)) / weight_sum
+    target_mean = (target * weights_3).sum(axis=(0, 1)) / weight_sum
+    source_var = (((source - source_mean) ** 2) * weights_3).sum(axis=(0, 1)) / weight_sum
+    target_var = (((target - target_mean) ** 2) * weights_3).sum(axis=(0, 1)) / weight_sum
+    source_std = np.sqrt(np.maximum(source_var, 1e-6))
+    target_std = np.sqrt(np.maximum(target_var, 1e-6))
+    corrected = (source - source_mean) * (target_std / source_std) + target_mean
+    corrected = np.clip(corrected, 0.0, 1.0)
+    return np.clip(source * (1.0 - strength) + corrected * strength, 0.0, 1.0)
 
 
 def _ttp_pad_image_to_size(image, target_width, target_height):
@@ -618,6 +1587,49 @@ def _ttp_crop_smart_tiles_from_meta(pil_image, tiles_meta, round_to):
     return tiles, tile_meta, positions, pil2tensor(preview)
 
 
+def _ttp_crop_smart_tile_set_from_meta(pil_image, tiles_meta, round_to):
+    image_width, image_height = pil_image.size
+    positions = []
+    tile_tensors = []
+    set_tiles_meta = []
+    for tile in tiles_meta:
+        item = dict(tile)
+        sx, sy, sw, sh = item["sample_box"]
+        sw = max(1, _ttp_round_to(sw, round_to))
+        sh = max(1, _ttp_round_to(sh, round_to))
+        if sx + sw > image_width:
+            sx = max(0, image_width - sw)
+        if sy + sh > image_height:
+            sy = max(0, image_height - sh)
+        sw = min(sw, image_width - sx)
+        sh = min(sh, image_height - sy)
+        item["sample_box"] = [sx, sy, sw, sh]
+        item["overlap_edges_px_source"] = _ttp_actual_overlap_edges_from_sample(item)
+        item["tile_canvas_box"] = [0, 0, sw, sh]
+        item["tile_canvas_size"] = [sw, sh]
+        x, y, w, h = item["paste_box"]
+        positions.append((x, y, x + w, y + h))
+        crop = pil_image.crop((sx, sy, sx + sw, sy + sh))
+        tile_tensors.append(pil2tensor(crop))
+        set_tiles_meta.append(item)
+
+    tile_meta = {
+        "version": 3,
+        "type": "ttp_smart_tile",
+        "storage": "tile_set",
+        "original_size": [image_width, image_height],
+        "tiles": set_tiles_meta,
+    }
+    return {
+        "version": 1,
+        "type": "ttp_smart_tile_set",
+        "original_size": [image_width, image_height],
+        "tile_meta": tile_meta,
+        "tile_images": tile_tensors,
+        "positions": positions,
+    }
+
+
 def _ttp_input_image_files():
     input_dir = folder_paths.get_input_directory()
     files = [file for file in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, file))]
@@ -644,6 +1656,136 @@ def _ttp_get_interactive_source_image(source_image=None, image=""):
             raise ValueError("source_image input must be a non-empty ComfyUI IMAGE tensor.")
         return tensor2pil(source_image[0].unsqueeze(0)).convert("RGB")
     return _ttp_load_input_image(image)
+
+
+def _ttp_send_smart_tile_layout_event(node_id, layout_json=None, message="", ok=True):
+    if PromptServer is None or not node_id:
+        return
+    payload = {
+        "node_id": str(node_id),
+        "ok": bool(ok),
+        "message": str(message or ""),
+    }
+    if layout_json:
+        payload["layout_json"] = layout_json
+    try:
+        PromptServer.instance.send_sync("ttp-smart-tile-layout", payload, PromptServer.instance.client_id)
+    except Exception:
+        pass
+
+
+def _ttp_unpack_node_output(result, index):
+    if isinstance(result, (tuple, list)):
+        return result[index]
+    if hasattr(result, "result"):
+        return result.result[index]
+    return result[index]
+
+
+def _ttp_split_prompt_terms(prompt):
+    terms = []
+    for part in str(prompt or "").replace("\n", ",").split(","):
+        term = part.strip()
+        if term:
+            terms.append(term)
+    return terms
+
+
+def _ttp_encode_sam3_prompt_conditioning(clip, prompt, max_detections=1):
+    if clip is None:
+        return None
+    terms = _ttp_split_prompt_terms(prompt)
+    if not terms:
+        terms = [str(prompt or "").strip() or "foreground object"]
+
+    entries = []
+    base_meta = {}
+    for term in terms:
+        tokens = clip.tokenize(term)
+        cond = clip.encode_from_tokens_scheduled(tokens)
+        if not cond:
+            continue
+        meta = dict(cond[0][1]) if len(cond[0]) > 1 and isinstance(cond[0][1], dict) else {}
+        if not base_meta:
+            base_meta = dict(meta)
+        entries.append({
+            "cond": cond[0][0],
+            "attention_mask": meta.get("attention_mask"),
+            "max_detections": max(1, int(max_detections)),
+            "prompt": term,
+        })
+
+    if not entries:
+        return None
+    if len(entries) == 1:
+        meta = dict(base_meta)
+        meta["sam3_prompt"] = entries[0]["prompt"]
+        return [[entries[0]["cond"], meta]]
+
+    meta = dict(base_meta)
+    meta["sam3_multi_cond"] = entries
+    meta["sam3_prompts"] = [entry["prompt"] for entry in entries]
+    return [[entries[0]["cond"], meta]]
+
+
+def _ttp_run_sam3_auto_layout(
+    pil_image,
+    vision_model,
+    vision_conditioning,
+    clip,
+    auto_prompt,
+    default_pad,
+    default_blend,
+    object_padding,
+    max_tiles,
+    allow_object_overlap,
+):
+    if vision_model is None:
+        raise ValueError("Connect an official SAM3/SAM3.1 model to vision_model before inference.")
+    if vision_conditioning is None:
+        per_prompt_max = max(1, int(max_tiles) // max(1, len(_ttp_split_prompt_terms(auto_prompt))))
+        vision_conditioning = _ttp_encode_sam3_prompt_conditioning(clip, auto_prompt, per_prompt_max)
+    if vision_conditioning is None:
+        raise ValueError("Connect CLIP to this node, or connect SAM3 text conditioning to vision_conditioning, before SAM3 text-prompt inference.")
+
+    try:
+        from comfy_extras.nodes_sam3 import SAM3_Detect
+    except Exception as exc:
+        raise RuntimeError("Official ComfyUI SAM3 Detect is unavailable in this ComfyUI build.") from exc
+
+    image_tensor = pil2tensor(pil_image)
+    result = SAM3_Detect.execute(
+        vision_model,
+        image_tensor,
+        conditioning=vision_conditioning,
+        threshold=0.5,
+        refine_iterations=2,
+        individual_masks=True,
+    )
+    masks = _ttp_unpack_node_output(result, 0)
+    bboxes = _ttp_unpack_node_output(result, 1)
+    image_width, image_height = pil_image.size
+    layout_json = _ttp_boxes_to_auto_layout(
+        bboxes,
+        image_width,
+        image_height,
+        default_pad=int(default_pad),
+        default_blend=int(default_blend),
+        object_padding=int(object_padding),
+        max_tiles=int(max_tiles),
+        include_background=False,
+        allow_object_overlap=bool(allow_object_overlap),
+        masks=masks,
+    )
+    count = len(_ttp_flatten_bboxes(bboxes))
+    prompt_note = "using internal auto_prompt CLIP encode" if clip is not None else "using external conditioning"
+    return layout_json, f"SAM3 inference created an auto tile layout from {count} detected object(s), {prompt_note}."
+
+
+def _ttp_run_qwenvl3_auto_layout(*_args, **_kwargs):
+    raise NotImplementedError(
+        "QwenVL3 mode is available as an interface, but this ComfyUI install has no official QwenVL bbox/VQA node API to call yet."
+    )
 
 
 def _ttp_interactive_layout_with_defaults(layout_json, default_pad, default_blend, include_full_image):
@@ -899,14 +2041,29 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
                 "default_blend": ("INT", {"default": 64, "min": 0, "max": 1024, "step": 8}),
                 "include_full_image": ("BOOLEAN", {"default": False}),
                 "round_to": ("INT", {"default": 8, "min": 1, "max": 128, "step": 1}),
+                "auto_detect_mode": (["none", "sam3.1", "qwenvl3"], {"default": "none"}),
+                "auto_detect_request": ("INT", {"default": 0, "min": 0, "max": 2147483647, "step": 1}),
+                "auto_prompt": ("STRING", {
+                    "default": "person, face, hands, eyes, text, foreground object, important object",
+                    "multiline": False,
+                }),
+                "allow_object_overlap": ("BOOLEAN", {"default": True}),
+                "auto_object_padding": ("INT", {"default": 96, "min": 0, "max": 2048, "step": 8}),
+                "auto_max_tiles": ("INT", {"default": 16, "min": 1, "max": 64, "step": 1}),
             },
             "optional": {
                 "source_image": ("IMAGE",),
+                "vision_model": ("MODEL",),
+                "vision_conditioning": ("CONDITIONING",),
+                "clip": ("CLIP",),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "IMAGE", "TTP_SMART_TILE_META", "LIST", "IMAGE", "STRING")
-    RETURN_NAMES = ("source_image", "tiles", "tile_meta", "positions", "preview", "layout_json")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "TTP_SMART_TILE_SET", "TTP_SMART_TILE_META", "LIST", "IMAGE", "STRING")
+    RETURN_NAMES = ("source_image", "tiles", "tile_set", "tile_meta", "positions", "preview", "layout_json")
     FUNCTION = "interactive_crop_tiles"
     CATEGORY = "TTP/Smart Tile Experimental"
 
@@ -920,7 +2077,16 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
             "default_blend": kwargs.get("default_blend"),
             "include_full_image": kwargs.get("include_full_image"),
             "round_to": kwargs.get("round_to"),
+            "auto_detect_mode": kwargs.get("auto_detect_mode", "none"),
+            "auto_detect_request": kwargs.get("auto_detect_request", 0),
+            "auto_prompt": kwargs.get("auto_prompt", ""),
+            "allow_object_overlap": kwargs.get("allow_object_overlap", True),
+            "auto_object_padding": kwargs.get("auto_object_padding", 96),
+            "auto_max_tiles": kwargs.get("auto_max_tiles", 16),
             "source_image": type(kwargs.get("source_image")).__name__ if kwargs.get("source_image") is not None else None,
+            "vision_model": type(kwargs.get("vision_model")).__name__ if kwargs.get("vision_model") is not None else None,
+            "vision_conditioning": type(kwargs.get("vision_conditioning")).__name__ if kwargs.get("vision_conditioning") is not None else None,
+            "clip": type(kwargs.get("clip")).__name__ if kwargs.get("clip") is not None else None,
         }
         if image and folder_paths.exists_annotated_filepath(image):
             try:
@@ -943,10 +2109,54 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
         default_blend=64,
         include_full_image=False,
         round_to=8,
+        auto_detect_mode="none",
+        auto_detect_request=0,
+        auto_prompt="person, face, hands, eyes, text, foreground object, important object",
+        allow_object_overlap=True,
+        auto_object_padding=96,
+        auto_max_tiles=16,
         source_image=None,
+        vision_model=None,
+        vision_conditioning=None,
+        clip=None,
+        unique_id=None,
     ):
         pil_image = _ttp_get_interactive_source_image(source_image=source_image, image=image)
         image_width, image_height = pil_image.size
+        mode = str(auto_detect_mode or "none").strip().lower()
+        if mode != "none" and int(auto_detect_request or 0) > 0:
+            try:
+                if mode == "sam3.1":
+                    layout_json, message = _ttp_run_sam3_auto_layout(
+                        pil_image,
+                        vision_model,
+                        vision_conditioning,
+                        clip,
+                        str(auto_prompt or ""),
+                        int(default_pad),
+                        int(default_blend),
+                        int(auto_object_padding),
+                        int(auto_max_tiles),
+                        bool(allow_object_overlap),
+                    )
+                    _ttp_send_smart_tile_layout_event(unique_id, layout_json, message, ok=True)
+                elif mode == "qwenvl3":
+                    layout_json, message = _ttp_run_qwenvl3_auto_layout(
+                        pil_image,
+                        vision_model,
+                        str(auto_prompt or ""),
+                        int(default_pad),
+                        int(default_blend),
+                        int(auto_object_padding),
+                        int(auto_max_tiles),
+                        bool(allow_object_overlap),
+                    )
+                    _ttp_send_smart_tile_layout_event(unique_id, layout_json, message, ok=True)
+                else:
+                    _ttp_send_smart_tile_layout_event(unique_id, None, f"Unsupported auto detect mode: {mode}", ok=False)
+            except Exception as exc:
+                _ttp_send_smart_tile_layout_event(unique_id, None, str(exc), ok=False)
+
         normalized_layout_json = _ttp_interactive_layout_with_defaults(
             layout_json,
             int(default_pad),
@@ -954,10 +2164,12 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
             bool(include_full_image),
         )
         tiles_meta = _ttp_parse_smart_tile_layout(normalized_layout_json, image_width, image_height)
+        tile_set = _ttp_crop_smart_tile_set_from_meta(pil_image, [dict(tile) for tile in tiles_meta], int(round_to))
         tiles, tile_meta, positions, preview = _ttp_crop_smart_tiles_from_meta(pil_image, tiles_meta, int(round_to))
         return (
             pil2tensor(pil_image),
             tiles,
+            tile_set,
             tile_meta,
             positions,
             preview,
@@ -965,19 +2177,497 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
         )
 
 
+class TTP_Smart_Tile_Set_Preview_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "tile_set": ("TTP_SMART_TILE_SET", {"forceInput": True}),
+                "mode": (["contact_sheet", "selected_tile"], {"default": "contact_sheet"}),
+                "selected_index": ("INT", {"default": 0, "min": 0, "max": 63, "step": 1}),
+                "thumbnail_size": ("INT", {"default": 256, "min": 64, "max": 1024, "step": 16}),
+                "columns": ("INT", {"default": 4, "min": 1, "max": 8, "step": 1}),
+                "show_labels": ("BOOLEAN", {"default": True}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("image", "info")
+    FUNCTION = "preview_tile_set"
+    CATEGORY = "TTP/Smart Tile Experimental"
+
+    def preview_tile_set(
+        self,
+        tile_set,
+        mode="contact_sheet",
+        selected_index=0,
+        thumbnail_size=256,
+        columns=4,
+        show_labels=True,
+    ):
+        if not isinstance(tile_set, dict) or tile_set.get("type") != "ttp_smart_tile_set":
+            raise ValueError("tile_set must come from TTP Smart Tile Interactive Crop (Experimental)")
+        tile_images = tile_set.get("tile_images", [])
+        tile_meta = tile_set.get("tile_meta", {})
+        tiles_info = tile_meta.get("tiles", [])
+        if not tile_images:
+            raise ValueError("tile_set contains no tile images.")
+        if len(tile_images) != len(tiles_info):
+            raise ValueError(f"tile_set images ({len(tile_images)}) do not match tile metadata ({len(tiles_info)}).")
+
+        index = _ttp_clamp(int(selected_index), 0, len(tile_images) - 1)
+        thumbs = []
+        info_lines = []
+        for tile_index, image_tensor in enumerate(tile_images):
+            tile = tiles_info[tile_index]
+            pil = _ttp_image_tensor_to_pil(image_tensor)
+            label = str(tile.get("label", tile.get("name", f"tile_{tile_index + 1}")))
+            layer = int(tile.get("layer", 0))
+            priority = float(tile.get("occlusion_priority", tile.get("priority", 0)))
+            info_lines.append(f"{tile_index}: {label} {pil.width}x{pil.height} layer={layer} priority={priority:g}")
+            thumbs.append((pil, label, layer, priority))
+
+        if mode == "selected_tile":
+            pil, label, layer, priority = thumbs[index]
+            preview = pil.copy().convert("RGB")
+            if show_labels:
+                draw = ImageDraw.Draw(preview)
+                text = f"{index}: {label}  {preview.width}x{preview.height}  L{layer}  P{priority:g}"
+                draw.rectangle((0, 0, min(preview.width, 12 + len(text) * 7), 24), fill=(0, 0, 0))
+                draw.text((6, 5), text, fill=(255, 255, 255))
+            return (pil2tensor(preview), "\n".join(info_lines))
+
+        thumb_size = int(thumbnail_size)
+        columns = max(1, int(columns))
+        rows = int(np.ceil(len(thumbs) / columns))
+        label_height = 30 if show_labels else 0
+        gap = 8
+        sheet_width = columns * thumb_size + (columns + 1) * gap
+        sheet_height = rows * (thumb_size + label_height) + (rows + 1) * gap
+        sheet = Image.new("RGB", (sheet_width, sheet_height), (24, 24, 27))
+        draw = ImageDraw.Draw(sheet)
+
+        for tile_index, (pil, label, layer, priority) in enumerate(thumbs):
+            col = tile_index % columns
+            row = tile_index // columns
+            x = gap + col * (thumb_size + gap)
+            y = gap + row * (thumb_size + label_height + gap)
+            tile_preview = pil.copy().convert("RGB")
+            tile_preview.thumbnail((thumb_size, thumb_size), Image.Resampling.LANCZOS)
+            box = Image.new("RGB", (thumb_size, thumb_size), (39, 39, 42))
+            offset = ((thumb_size - tile_preview.width) // 2, (thumb_size - tile_preview.height) // 2)
+            box.paste(tile_preview, offset)
+            sheet.paste(box, (x, y))
+            draw.rectangle((x, y, x + thumb_size - 1, y + thumb_size - 1), outline=(148, 163, 184), width=1)
+            if show_labels:
+                text = f"{tile_index}: {pil.width}x{pil.height} L{layer} P{priority:g}"
+                draw.text((x + 4, y + thumb_size + 7), text, fill=(226, 232, 240))
+
+        return (pil2tensor(sheet), "\n".join(info_lines))
+
+
+class TTP_QwenVL3_Local_Loader_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model_file": (_ttp_qwenvl_safetensor_files(),),
+                "model_family": (["auto", "qwen_vl"], {"default": "auto"}),
+                "device": (["default", "cpu"], {"default": "default", "advanced": True}),
+            }
+        }
+
+    RETURN_TYPES = ("TTP_QWENVL3_MODEL", "STRING")
+    RETURN_NAMES = ("qwen_vl_model", "info")
+    FUNCTION = "load_model"
+    CATEGORY = "TTP/Smart Tile Experimental"
+
+    def load_model(self, model_file, model_family="auto", device="default"):
+        loaded = _ttp_load_qwenvl3_local_model(
+            model_file,
+            model_family=str(model_family),
+            device_mode=str(device),
+        )
+        info = f"Loaded QwenVL tagging model from {loaded['model_file']} using ComfyUI native Qwen-VL loader"
+        return (loaded, info)
+
+
+class TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "tile_set": ("TTP_SMART_TILE_SET", {"forceInput": True}),
+                "mode": (["template", "qwen_vl_api", "qwen_vl_local"], {"default": "template"}),
+                "reference_image_mode": (["none", "first_message", "every_tile"], {"default": "first_message"}),
+                "endpoint_url": ("STRING", {"default": "http://127.0.0.1:8000/v1/chat/completions", "multiline": False}),
+                "model_name": ("STRING", {"default": "Qwen/Qwen3-VL-8B-Instruct", "multiline": False}),
+                "system_prompt": ("STRING", {
+                    "default": "You are an image-to-generation-prompt tagger for tiled image refinement. Describe only visible visual facts useful for image-to-image refinement. Preserve identity, clothing, pose, material, lighting, camera perspective, and local details. Do not invent objects outside the tile. Return only strict JSON with exactly these string fields: label, caption, prompt, negative. Do not repeat the instruction. Do not wrap the JSON in markdown.",
+                    "multiline": True,
+                }),
+                "tile_instruction": ("STRING", {
+                    "default": "Analyze the visible tile image and write a concrete img2img refinement prompt for this tile. If a reference image is provided, keep this tile consistent with the reference image's subject, style, lighting, and identity. Return only JSON like {\"label\":\"short label\",\"caption\":\"specific visible description\",\"prompt\":\"specific positive generation prompt\",\"negative\":\"tile-specific negative prompt\"}.",
+                    "multiline": True,
+                }),
+                "global_prompt": ("STRING", {"default": "", "multiline": True}),
+                "global_negative": ("STRING", {"default": "", "multiline": True}),
+                "prompt_merge_mode": (["caption_only", "global_plus_caption", "global_plus_label_plus_caption"], {"default": "global_plus_label_plus_caption"}),
+                "output_language": (["english", "chinese", "bilingual"], {"default": "english"}),
+                "max_new_tokens": ("INT", {"default": 256, "min": 32, "max": 4096, "step": 16}),
+                "temperature": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 2.0, "step": 0.05}),
+            },
+            "optional": {
+                "reference_image": ("IMAGE",),
+                "qwen_vl_model": ("TTP_QWENVL3_MODEL",),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 2147483647, "step": 1}),
+            }
+        }
+
+    RETURN_TYPES = ("TTP_SMART_TILE_SET", "STRING", "STRING")
+    RETURN_NAMES = ("tile_set", "prompt_set_json", "summary")
+    FUNCTION = "build_prompt_set"
+    CATEGORY = "TTP/Smart Tile Experimental"
+
+    def build_prompt_set(
+        self,
+        tile_set,
+        mode="template",
+        reference_image_mode="first_message",
+        endpoint_url="http://127.0.0.1:8000/v1/chat/completions",
+        model_name="Qwen/Qwen3-VL-8B-Instruct",
+        system_prompt="",
+        tile_instruction="",
+        global_prompt="",
+        global_negative="",
+        prompt_merge_mode="global_plus_label_plus_caption",
+        output_language="english",
+        max_new_tokens=256,
+        temperature=0.2,
+        reference_image=None,
+        qwen_vl_model=None,
+        seed=0,
+    ):
+        if isinstance(reference_image, dict) and reference_image.get("type") == "ttp_qwenvl3_model" and qwen_vl_model is None:
+            qwen_vl_model = reference_image
+            reference_image = None
+        if isinstance(seed, dict) and seed.get("type") == "ttp_qwenvl3_model" and qwen_vl_model is None:
+            qwen_vl_model = seed
+            seed = 0
+        tile_images, _tile_meta, tiles_info = _ttp_validate_tile_set(tile_set)
+        next_tile_set = _ttp_clone_tile_set(tile_set)
+        next_tiles = next_tile_set["tile_meta"]["tiles"]
+        reference_context = ""
+        reference_pil = None
+        if reference_image is not None:
+            reference_pil = _ttp_image_tensor_to_pil(_ttp_first_image_tensor(reference_image))
+
+        effective_mode = str(mode or "template")
+        if effective_mode == "template" and qwen_vl_model is not None:
+            effective_mode = "qwen_vl_local"
+
+        if effective_mode == "qwen_vl_local" and qwen_vl_model is None:
+            raise ValueError("qwen_vl_local mode requires TTP QwenVL3 Local Loader output.")
+
+        chat_fn = None
+        if effective_mode == "qwen_vl_api":
+            chat_fn = lambda messages: _ttp_qwen_vl_chat(endpoint_url, model_name, messages, max_new_tokens=max_new_tokens, temperature=temperature)
+        elif effective_mode == "qwen_vl_local":
+            chat_fn = lambda messages: _ttp_qwen_vl_local_chat(qwen_vl_model, messages, max_new_tokens=max_new_tokens, temperature=temperature, seed=seed)
+
+        if effective_mode in ("qwen_vl_api", "qwen_vl_local") and reference_pil is not None and reference_image_mode == "first_message":
+            messages = [
+                {"role": "system", "content": str(system_prompt or "")},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Analyze this reference image for identity, style, lighting, material, camera perspective, and global visual consistency. Return a concise visual context paragraph."},
+                    {"type": "image_url", "image_url": {"url": _ttp_pil_to_data_url(reference_pil)}},
+                ]},
+            ]
+            reference_context = chat_fn(messages)
+
+        prompt_records = []
+        for index, (image_tensor, tile) in enumerate(zip(tile_images, next_tiles)):
+            if effective_mode == "template":
+                record = _ttp_template_prompt_for_tile(tile, global_prompt, global_negative, prompt_merge_mode)
+                raw = ""
+            elif effective_mode in ("qwen_vl_api", "qwen_vl_local"):
+                tile_pil = _ttp_image_tensor_to_pil(image_tensor)
+                language_hint = {
+                    "english": "Write prompt fields in English.",
+                    "chinese": "Write prompt fields in Chinese.",
+                    "bilingual": "Write prompt fields in English and Chinese.",
+                }.get(str(output_language), "Write prompt fields in English.")
+                user_text = "\n".join([
+                    str(tile_instruction or ""),
+                    language_hint,
+                    f"Tile index: {index}. Existing label: {tile.get('label', tile.get('name', 'tile'))}.",
+                    f"Global prompt: {global_prompt}",
+                    f"Global negative: {global_negative}",
+                    f"Reference context: {reference_context}",
+                ])
+                content = [{"type": "text", "text": user_text}]
+                if reference_pil is not None and reference_image_mode == "every_tile":
+                    content.append({"type": "image_url", "image_url": {"url": _ttp_pil_to_data_url(reference_pil)}})
+                content.append({"type": "image_url", "image_url": {"url": _ttp_pil_to_data_url(tile_pil)}})
+                messages = [
+                    {"role": "system", "content": str(system_prompt or "")},
+                    {"role": "user", "content": content},
+                ]
+                raw = chat_fn(messages)
+                if not str(raw or "").strip():
+                    raise RuntimeError(f"QwenVL returned an empty response for tile {index}.")
+                parsed = _ttp_parse_qwen_tile_record(raw, index)
+                caption = parsed.get("caption", "")
+                prompt = parsed.get("prompt", "")
+                negative = parsed.get("negative", global_negative) or global_negative
+                label = parsed.get("label", tile.get("label", tile.get("name", "tile"))) or tile.get("label", tile.get("name", "tile"))
+                if not prompt:
+                    prompt, negative = _ttp_compose_tile_prompt({**tile, "label": label}, caption, global_prompt, negative, prompt_merge_mode)
+                record = {
+                    "label": str(label),
+                    "caption": str(caption),
+                    "prompt": str(prompt),
+                    "negative": str(negative),
+                }
+            else:
+                raise ValueError(f"Unsupported prompt set builder mode: {mode}")
+
+            tile.update({
+                "label": record["label"],
+                "caption": record["caption"],
+                "prompt": record["prompt"],
+                "negative": record["negative"],
+                "prompt_tag": tile.get("prompt_tag", f"tile_{index}_{record['label']}"),
+                "prompt_source": effective_mode,
+                "qwen_model": str(model_name) if effective_mode == "qwen_vl_api" else str(qwen_vl_model.get("model_file", "")) if effective_mode == "qwen_vl_local" and isinstance(qwen_vl_model, dict) else "",
+                "tile_hash": _ttp_tile_hash(image_tensor),
+            })
+            if raw:
+                tile["qwen_raw"] = raw
+            prompt_records.append({
+                "index": index,
+                "name": tile.get("name", f"tile_{index}"),
+                "label": tile["label"],
+                "caption": tile["caption"],
+                "prompt": tile["prompt"],
+                "negative": tile["negative"],
+                "prompt_tag": tile["prompt_tag"],
+            })
+
+        prompt_set_json = json.dumps({
+            "type": "ttp_smart_tile_prompt_set",
+            "mode": effective_mode,
+            "requested_mode": mode,
+            "reference_image_mode": reference_image_mode,
+            "seed": int(seed if seed is not None else 0),
+            "model_name": model_name if effective_mode != "qwen_vl_local" else qwen_vl_model.get("model_file", "") if isinstance(qwen_vl_model, dict) else "",
+            "tiles": prompt_records,
+        }, ensure_ascii=False, indent=2)
+        source_name = model_name if effective_mode != "qwen_vl_local" else qwen_vl_model.get("model_file", "") if isinstance(qwen_vl_model, dict) else ""
+        summary_lines = [f"mode={effective_mode} model={source_name or 'none'} tiles={len(prompt_records)}"]
+        summary_lines.extend(f'{item["index"]}: {item["label"]} -> {item["prompt"]}' for item in prompt_records)
+        summary = "\n".join(summary_lines)
+        return (next_tile_set, prompt_set_json, summary)
+
+
+class TTP_Smart_Tile_Loop_Source_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "tile_set": ("TTP_SMART_TILE_SET", {"forceInput": True}),
+                "session_id": ("STRING", {"default": "default", "multiline": False}),
+                "restart_request": ("INT", {"default": 0, "min": 0, "max": 2147483647, "step": 1}),
+                "loop_request": ("INT", {"default": 0, "min": 0, "max": 2147483647, "step": 1}),
+            },
+            "optional": {
+                "clip": ("CLIP",),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "TTP_SMART_TILE_TASK", "INT", "INT", "BOOLEAN", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "CONDITIONING", "CONDITIONING")
+    RETURN_NAMES = ("image", "tile_task", "index", "count", "done", "status", "prompt", "negative", "caption", "label", "prompt_tag", "positive_conditioning", "negative_conditioning")
+    FUNCTION = "loop_source"
+    CATEGORY = "TTP/Smart Tile Experimental"
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        session_id = str(kwargs.get("session_id", "default") or "default")
+        session = _TTP_SMART_TILE_LOOP_SESSIONS.get(session_id, {})
+        tile_set = kwargs.get("tile_set")
+        fingerprint = _ttp_tile_set_fingerprint(tile_set) if isinstance(tile_set, dict) else None
+        return json.dumps({
+            "session_id": session_id,
+            "restart_request": kwargs.get("restart_request", 0),
+            "loop_request": kwargs.get("loop_request", 0),
+            "fingerprint": fingerprint,
+            "index": session.get("index", 0),
+            "done": session.get("done", False),
+            "clip": type(kwargs.get("clip")).__name__ if kwargs.get("clip") is not None else None,
+        }, sort_keys=True)
+
+    def loop_source(self, tile_set, session_id="default", restart_request=0, loop_request=0, clip=None, unique_id=None):
+        tile_images, tile_meta, tiles_info = _ttp_validate_tile_set(tile_set)
+        session_key = str(session_id or "default")
+        fingerprint = _ttp_tile_set_fingerprint(tile_set)
+        session = _TTP_SMART_TILE_LOOP_SESSIONS.get(session_key)
+        should_restart = (
+            session is None
+            or session.get("fingerprint") != fingerprint
+            or int(session.get("restart_request", -1)) != int(restart_request)
+        )
+        if should_restart:
+            session = {
+                "fingerprint": fingerprint,
+                "restart_request": int(restart_request),
+                "source_node_id": str(unique_id or ""),
+                "source_tile_set": _ttp_clone_tile_set(tile_set),
+                "processed_tile_set": _ttp_clone_tile_set(tile_set),
+                "index": 0,
+                "done": False,
+            }
+            _TTP_SMART_TILE_LOOP_SESSIONS[session_key] = session
+
+        count = len(tile_images)
+        index = _ttp_clamp(int(session.get("index", 0)), 0, max(0, count - 1))
+        done = bool(session.get("done", False)) or count <= 0
+        if done:
+            index = max(0, count - 1)
+
+        task = {
+            "type": "ttp_smart_tile_task",
+            "session_id": session_key,
+            "source_node_id": str(unique_id or session.get("source_node_id", "")),
+            "index": int(index),
+            "count": int(count),
+            "done": bool(done),
+            "tile_meta": dict(tiles_info[index]) if count else {},
+        }
+        image = tile_images[index] if count else pil2tensor(Image.new("RGB", (1, 1), "black"))
+        status = "done" if done else f"tile {index + 1}/{count}"
+        current_tile = tiles_info[index] if count else {}
+        prompt = str(current_tile.get("prompt", ""))
+        negative = str(current_tile.get("negative", ""))
+        return (
+            image,
+            task,
+            int(index),
+            int(count),
+            bool(done),
+            status,
+            prompt,
+            negative,
+            str(current_tile.get("caption", "")),
+            str(current_tile.get("label", current_tile.get("name", ""))),
+            str(current_tile.get("prompt_tag", "")),
+            _ttp_encode_text_conditioning(clip, prompt),
+            _ttp_encode_text_conditioning(clip, negative),
+        )
+
+
+class TTP_Smart_Tile_Loop_Collect_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "tile_task": ("TTP_SMART_TILE_TASK", {"forceInput": True}),
+                "processed_image": ("IMAGE",),
+            }
+        }
+
+    RETURN_TYPES = ("TTP_SMART_TILE_SET", "BOOLEAN", "INT", "STRING")
+    RETURN_NAMES = ("tile_set", "done", "next_index", "status")
+    FUNCTION = "loop_collect"
+    CATEGORY = "TTP/Smart Tile Experimental"
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        task = kwargs.get("tile_task", {})
+        session_id = task.get("session_id", "") if isinstance(task, dict) else ""
+        session = _TTP_SMART_TILE_LOOP_SESSIONS.get(session_id, {})
+        return json.dumps({
+            "session_id": session_id,
+            "task_index": task.get("index") if isinstance(task, dict) else None,
+            "session_index": session.get("index", 0),
+            "done": session.get("done", False),
+        }, sort_keys=True)
+
+    def loop_collect(self, tile_task, processed_image):
+        if not isinstance(tile_task, dict) or tile_task.get("type") != "ttp_smart_tile_task":
+            raise ValueError("tile_task must come from TTP Smart Tile Loop Source (Experimental)")
+        session_id = str(tile_task.get("session_id", "default"))
+        session = _TTP_SMART_TILE_LOOP_SESSIONS.get(session_id)
+        if session is None:
+            raise ValueError(f"Smart Tile loop session not found: {session_id}")
+
+        processed_tile_set = session["processed_tile_set"]
+        tile_images, _tile_meta, _tiles_info = _ttp_validate_tile_set(processed_tile_set)
+        count = len(tile_images)
+        index = _ttp_clamp(int(tile_task.get("index", 0)), 0, max(0, count - 1))
+        if not bool(tile_task.get("done", False)) and count > 0:
+            tile_images[index] = _ttp_first_image_tensor(processed_image)
+
+        next_index = index + 1
+        done = next_index >= count
+        session["index"] = min(next_index, max(0, count - 1))
+        session["done"] = bool(done)
+        status = "done" if done else f"next tile {next_index + 1}/{count}"
+        event_task = dict(tile_task)
+        event_task["index"] = min(next_index, max(0, count - 1))
+        _ttp_send_smart_tile_loop_event(event_task, done=done, message=status)
+        return (_ttp_clone_tile_set(processed_tile_set), bool(done), int(next_index), status)
+
+
+class TTP_Smart_Tile_Image_Upscale_Prep_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "scale": ("FLOAT", {"default": 2.0, "min": 0.1, "max": 16.0, "step": 0.05}),
+                "round_to": ("INT", {"default": 8, "min": 1, "max": 256, "step": 1}),
+                "resampling": (["lanczos", "bicubic", "bilinear", "nearest"], {"default": "lanczos"}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("image", "info")
+    FUNCTION = "upscale_tile"
+    CATEGORY = "TTP/Smart Tile Experimental"
+
+    def upscale_tile(self, image, scale=2.0, round_to=8, resampling="lanczos"):
+        pil = _ttp_image_tensor_to_pil(_ttp_first_image_tensor(image))
+        upscaled = _ttp_resize_pil_to_round(pil, float(scale), int(round_to), str(resampling))
+        info = f"{pil.width}x{pil.height} -> {upscaled.width}x{upscaled.height} scale={float(scale):g} round_to={int(round_to)}"
+        return (pil2tensor(upscaled), info)
+
+
 class TTP_Smart_Tile_Assemble_Experimental:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "sampled_tiles": ("IMAGE",),
-                "tile_meta": ("TTP_SMART_TILE_META", {"forceInput": True}),
                 "blend_multiplier": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.05}),
                 "output_scale": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 16.0, "step": 0.05}),
                 "use_priority": ("BOOLEAN", {"default": True}),
+                "tile_alignment": (["center_crop", "crop_or_pad", "resize", "off"], {"default": "center_crop"}),
+                "edge_crop_px": ("INT", {"default": 0, "min": 0, "max": 512, "step": 1}),
+                "color_correction": (["off", "local_mean_std", "reinhard_lab", "mkl_lab", "histogram"], {"default": "off"}),
+                "color_strength": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "mask_blend_mode": (["off", "auto", "mask_only", "mask_feather"], {"default": "mask_feather"}),
+                "pixel_alignment": (["off", "mask_edge_match", "edge_match"], {"default": "off"}),
+                "pixel_alignment_radius": ("INT", {"default": 8, "min": 0, "max": 64, "step": 1}),
             },
             "optional": {
+                "sampled_tiles": ("IMAGE",),
+                "tile_meta": ("TTP_SMART_TILE_META",),
+                "tile_set": ("TTP_SMART_TILE_SET",),
                 "base_image": ("IMAGE",),
+                "source_image": ("IMAGE",),
+                "color_reference_image": ("IMAGE",),
             }
         }
 
@@ -986,13 +2676,44 @@ class TTP_Smart_Tile_Assemble_Experimental:
     FUNCTION = "assemble_tiles"
     CATEGORY = "TTP/Smart Tile Experimental"
 
-    def assemble_tiles(self, sampled_tiles, tile_meta, blend_multiplier=1.0, output_scale=0.0, use_priority=True, base_image=None):
+    def assemble_tiles(
+        self,
+        blend_multiplier=1.0,
+        output_scale=0.0,
+        use_priority=True,
+        tile_alignment="center_crop",
+        edge_crop_px=0,
+        color_correction="off",
+        color_strength=0.35,
+        mask_blend_mode="mask_feather",
+        pixel_alignment="off",
+        pixel_alignment_radius=8,
+        sampled_tiles=None,
+        tile_meta=None,
+        tile_set=None,
+        base_image=None,
+        source_image=None,
+        color_reference_image=None,
+    ):
+        tile_images = None
+        if tile_set is not None:
+            if not isinstance(tile_set, dict) or tile_set.get("type") != "ttp_smart_tile_set":
+                raise ValueError("tile_set must come from TTP Smart Tile Interactive Crop (Experimental)")
+            tile_meta = tile_set.get("tile_meta")
+            tile_images = tile_set.get("tile_images", [])
+
         if not isinstance(tile_meta, dict) or tile_meta.get("type") != "ttp_smart_tile":
             raise ValueError("tile_meta must come from TTP Smart Tile Crop (Experimental)")
 
         tiles_info = tile_meta.get("tiles", [])
-        if len(tiles_info) != sampled_tiles.shape[0]:
-            raise ValueError(f"sampled_tiles batch ({sampled_tiles.shape[0]}) does not match tile_meta tiles ({len(tiles_info)})")
+        if tile_images is None:
+            if sampled_tiles is None:
+                raise ValueError("Connect either tile_set, or sampled_tiles plus tile_meta.")
+            if len(tiles_info) != sampled_tiles.shape[0]:
+                raise ValueError(f"sampled_tiles batch ({sampled_tiles.shape[0]}) does not match tile_meta tiles ({len(tiles_info)})")
+            tile_images = [sampled_tiles[index] for index in range(int(sampled_tiles.shape[0]))]
+        elif len(tile_images) != len(tiles_info):
+            raise ValueError(f"tile_set images ({len(tile_images)}) do not match tile_meta tiles ({len(tiles_info)})")
 
         original_width, original_height = tile_meta["original_size"]
         if output_scale <= 0:
@@ -1001,8 +2722,9 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 _, _, sw, sh = tile["sample_box"]
                 canvas_width, canvas_height = tile.get("tile_canvas_size", [sw, sh])
                 canvas_box = tile.get("tile_canvas_box", [0, 0, sw, sh])
-                content_width = float(sampled_tiles[index].shape[1]) * (canvas_box[2] / max(1, canvas_width))
-                content_height = float(sampled_tiles[index].shape[0]) * (canvas_box[3] / max(1, canvas_height))
+                tile_width, tile_height = _ttp_image_tensor_size(tile_images[index])
+                content_width = float(tile_width) * (canvas_box[2] / max(1, canvas_width))
+                content_height = float(tile_height) * (canvas_box[3] / max(1, canvas_height))
                 inferred_scales.append(content_width / max(1, sw))
                 inferred_scales.append(content_height / max(1, sh))
             output_scale = float(np.median(inferred_scales)) if inferred_scales else 1.0
@@ -1011,8 +2733,9 @@ class TTP_Smart_Tile_Assemble_Experimental:
         output_width = max(1, int(round(original_width * output_scale)))
         output_height = max(1, int(round(original_height * output_scale)))
 
-        if base_image is not None:
-            base_pil = tensor2pil(base_image[0].unsqueeze(0)).convert("RGB")
+        base_source_image = base_image if base_image is not None else source_image
+        if base_source_image is not None:
+            base_pil = tensor2pil(base_source_image[0].unsqueeze(0)).convert("RGB")
             if base_pil.size != (output_width, output_height):
                 base_pil = base_pil.resize((output_width, output_height), Image.Resampling.LANCZOS)
             canvas = np.array(base_pil).astype(np.float32) / 255.0
@@ -1021,10 +2744,27 @@ class TTP_Smart_Tile_Assemble_Experimental:
             canvas = np.zeros((output_height, output_width, 3), dtype=np.float32)
             weights = np.zeros((output_height, output_width, 1), dtype=np.float32)
 
+        priority_ranks = np.full((output_height, output_width, 1), -np.inf, dtype=np.float32)
+        use_occlusion = any(
+            float(tile.get("occlusion_priority", 0.0)) != 0.0 or int(tile.get("layer", 0)) != 0
+            for tile in tiles_info
+        )
+        if base_source_image is not None and use_occlusion:
+            priority_ranks[:, :, :] = 0.0
+
+        color_reference_pil = None
+        if color_reference_image is not None:
+            color_reference_pil = tensor2pil(color_reference_image[0].unsqueeze(0)).convert("RGB")
+        elif source_image is not None:
+            color_reference_pil = tensor2pil(source_image[0].unsqueeze(0)).convert("RGB")
+        elif base_source_image is not None:
+            color_reference_pil = tensor2pil(base_source_image[0].unsqueeze(0)).convert("RGB")
+        if color_correction != "off" and color_reference_pil is None:
+            raise ValueError("color_correction requires source_image, color_reference_image, or base_image as a reference.")
+
         for index, tile in enumerate(tiles_info):
-            tile_pil = tensor2pil(sampled_tiles[index].unsqueeze(0)).convert("RGB")
+            tile_pil = _ttp_image_tensor_to_pil(tile_images[index])
             sx, sy, sw, sh = tile["sample_box"]
-            px, py, pw, ph = tile["paste_box"]
 
             canvas_width, canvas_height = tile.get("tile_canvas_size", [sw, sh])
             canvas_box = tile.get("tile_canvas_box", [0, 0, sw, sh])
@@ -1035,39 +2775,117 @@ class TTP_Smart_Tile_Assemble_Experimental:
 
             tile_scale_x = content_width / max(1, sw)
             tile_scale_y = content_height / max(1, sh)
-            local_left = int(round((px - sx) * tile_scale_x))
-            local_top = int(round((py - sy) * tile_scale_y))
-            local_right = int(round(local_left + pw * tile_scale_x))
-            local_bottom = int(round(local_top + ph * tile_scale_y))
-            local_left = _ttp_clamp(content_left + local_left, 0, tile_pil.width - 1)
-            local_top = _ttp_clamp(content_top + local_top, 0, tile_pil.height - 1)
-            local_right = _ttp_clamp(content_left + local_right, local_left + 1, tile_pil.width)
-            local_bottom = _ttp_clamp(content_top + local_bottom, local_top + 1, tile_pil.height)
+            local_left = _ttp_clamp(content_left, 0, tile_pil.width - 1)
+            local_top = _ttp_clamp(content_top, 0, tile_pil.height - 1)
+            local_right = _ttp_clamp(content_left + content_width, local_left + 1, tile_pil.width)
+            local_bottom = _ttp_clamp(content_top + content_height, local_top + 1, tile_pil.height)
 
             paste_region = tile_pil.crop((local_left, local_top, local_right, local_bottom))
-            out_x = int(round(px * output_scale))
-            out_y = int(round(py * output_scale))
-            out_w = max(1, int(round(pw * output_scale)))
-            out_h = max(1, int(round(ph * output_scale)))
-            if paste_region.size != (out_w, out_h):
-                paste_region = paste_region.resize((out_w, out_h), Image.Resampling.LANCZOS)
+            out_x = int(round(sx * output_scale))
+            out_y = int(round(sy * output_scale))
+            out_w = max(1, int(round(sw * output_scale)))
+            out_h = max(1, int(round(sh * output_scale)))
+            crop_px = max(0, int(edge_crop_px))
+            if crop_px > 0 and paste_region.width > crop_px * 2 and paste_region.height > crop_px * 2:
+                paste_region = paste_region.crop((
+                    crop_px,
+                    crop_px,
+                    paste_region.width - crop_px,
+                    paste_region.height - crop_px,
+                ))
+            paste_region = _ttp_align_pil_to_aspect(paste_region, out_w, out_h, str(tile_alignment))
+
+            if color_correction not in ("off", "local_mean_std"):
+                ref = color_reference_pil
+                if ref.size != (original_width, original_height):
+                    ref = ref.resize((original_width, original_height), Image.Resampling.LANCZOS)
+                ref_region = ref.crop((sx, sy, sx + sw, sy + sh))
+                if ref_region.size != (out_w, out_h):
+                    ref_region = ref_region.resize((out_w, out_h), Image.Resampling.LANCZOS)
+                corrected = _ttp_apply_color_transfer(
+                    pil2tensor(paste_region),
+                    pil2tensor(ref_region),
+                    color_correction,
+                    float(color_strength),
+                )
+                paste_region = tensor2pil(corrected[0].unsqueeze(0)).convert("RGB")
 
             blend = int(round(tile.get("blend", 0) * output_scale * blend_multiplier))
-            mask = _ttp_create_feather_mask(out_w, out_h, blend)
+            mask = _ttp_create_sample_blend_mask(
+                out_w,
+                out_h,
+                tile.get("overlap_edges_px_source", {}),
+                blend,
+                output_scale,
+                output_scale,
+            )
+            object_mask = _ttp_tile_object_mask_array(tile, out_w, out_h, str(mask_blend_mode), blend)
+            if object_mask is not None:
+                if str(mask_blend_mode) == "mask_only":
+                    mask = object_mask
+                else:
+                    mask = mask * object_mask
+            coverage_mask = np.clip(mask.copy(), 0.0, 1.0)
             importance = max(0.0, float(tile.get("importance", 1.0)))
             priority = max(0.0, float(tile.get("priority", 50.0)))
             priority_scale = (1.0 + priority / 100.0) if use_priority else 1.0
             mask = mask * importance * priority_scale
 
             region = np.array(paste_region).astype(np.float32) / 255.0
+            if str(pixel_alignment) != "off":
+                reference = canvas / np.maximum(weights, 1e-6)
+                dx, dy = _ttp_find_pixel_alignment_offset(
+                    region,
+                    reference,
+                    weights,
+                    out_x,
+                    out_y,
+                    coverage_mask,
+                    int(pixel_alignment_radius),
+                    str(pixel_alignment),
+                )
+                out_x += dx
+                out_y += dy
+            paste_x = max(0, out_x)
+            paste_y = max(0, out_y)
             x_end = min(output_width, out_x + out_w)
             y_end = min(output_height, out_y + out_h)
-            region_w = x_end - out_x
-            region_h = y_end - out_y
+            region_left = paste_x - out_x
+            region_top = paste_y - out_y
+            region_w = x_end - paste_x
+            region_h = y_end - paste_y
             if region_w <= 0 or region_h <= 0:
                 continue
-            canvas[out_y:y_end, out_x:x_end] += region[:region_h, :region_w] * mask[:region_h, :region_w]
-            weights[out_y:y_end, out_x:x_end] += mask[:region_h, :region_w]
+            region = region[region_top:region_top + region_h, region_left:region_left + region_w]
+            mask = mask[region_top:region_top + region_h, region_left:region_left + region_w]
+            coverage_mask = coverage_mask[region_top:region_top + region_h, region_left:region_left + region_w]
+            if str(color_correction) == "local_mean_std":
+                ref = color_reference_pil
+                if ref.size != (output_width, output_height):
+                    ref = ref.resize((output_width, output_height), Image.Resampling.LANCZOS)
+                ref_region = np.array(ref.crop((paste_x, paste_y, x_end, y_end))).astype(np.float32) / 255.0
+                region = _ttp_apply_local_mean_std_color(region, ref_region, coverage_mask, float(color_strength))
+            if use_occlusion:
+                occlusion = float(tile.get("occlusion_priority", 0.0))
+                layer = float(tile.get("layer", 0.0))
+                rank = occlusion * 1000000.0 + layer * 10000.0 + (priority if use_priority else 0.0)
+                rank_view = priority_ranks[paste_y:y_end, paste_x:x_end]
+                mask_active = coverage_mask > 1e-6
+                higher = (rank > rank_view + 1e-6) & mask_active
+                eligible = (rank >= rank_view - 1e-6) & mask_active
+                canvas_view = canvas[paste_y:y_end, paste_x:x_end]
+                weights_view = weights[paste_y:y_end, paste_x:x_end]
+                if np.any(higher):
+                    higher_alpha = coverage_mask * higher.astype(np.float32)
+                    keep = 1.0 - higher_alpha
+                    canvas_view *= keep
+                    weights_view *= keep
+                    rank_view[higher[:, :, 0], :] = rank
+                canvas_view += region * mask * eligible
+                weights_view += mask * eligible
+            else:
+                canvas[paste_y:y_end, paste_x:x_end] += region * mask
+                weights[paste_y:y_end, paste_x:x_end] += mask
 
         safe_weights = np.maximum(weights, 1e-6)
         output = canvas / safe_weights
@@ -1079,6 +2897,70 @@ class TTP_Smart_Tile_Assemble_Experimental:
             torch.from_numpy(output.astype(np.float32)).unsqueeze(0),
             torch.from_numpy(weight_preview.astype(np.float32)).unsqueeze(0),
         )
+
+
+class TTP_Smart_Tile_Save_Final_Image_Experimental:
+    def __init__(self):
+        self.output_dir = folder_paths.get_output_directory()
+        self.type = "output"
+        self.compress_level = 4
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "done": ("BOOLEAN", {"default": True}),
+                "filename_prefix": ("STRING", {"default": "TTP_Smart_Tile"}),
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+            },
+        }
+
+    RETURN_TYPES = ()
+    FUNCTION = "save_final_image"
+    OUTPUT_NODE = True
+    CATEGORY = "TTP/Smart Tile Experimental"
+
+    def save_final_image(self, images, done=True, filename_prefix="TTP_Smart_Tile", prompt=None, extra_pnginfo=None):
+        if not bool(done):
+            return {"ui": {"images": []}}
+
+        if images is None or int(images.shape[0]) <= 0:
+            raise ValueError("images must contain at least one image.")
+
+        image = images[-1]
+        full_output_folder, filename, counter, subfolder, _filename_prefix = folder_paths.get_save_image_path(
+            str(filename_prefix or "TTP_Smart_Tile"),
+            self.output_dir,
+            image.shape[1],
+            image.shape[0],
+        )
+        i = 255.0 * image.cpu().numpy()
+        img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+
+        metadata = None
+        if not args.disable_metadata:
+            metadata = PngInfo()
+            if prompt is not None:
+                metadata.add_text("prompt", json.dumps(prompt))
+            if extra_pnginfo is not None:
+                for key in extra_pnginfo:
+                    metadata.add_text(key, json.dumps(extra_pnginfo[key]))
+
+        file = f"{filename}_{counter:05}_.png"
+        img.save(os.path.join(full_output_folder, file), pnginfo=metadata, compress_level=self.compress_level)
+        return {
+            "ui": {
+                "images": [{
+                    "filename": file,
+                    "subfolder": subfolder,
+                    "type": self.type,
+                }]
+            }
+        }
 
 
 class TTP_CoordinateSplitter:
@@ -1924,7 +3806,14 @@ NODE_CLASS_MAPPINGS = {
     "TTP_Smart_Tile_Crop_Experimental": TTP_Smart_Tile_Crop_Experimental,
     "TTP_Smart_Tile_Visual_Crop_Experimental": TTP_Smart_Tile_Visual_Crop_Experimental,
     "TTP_Smart_Tile_Interactive_Crop_Experimental": TTP_Smart_Tile_Interactive_Crop_Experimental,
+    "TTP_Smart_Tile_Set_Preview_Experimental": TTP_Smart_Tile_Set_Preview_Experimental,
+    "TTP_QwenVL3_Local_Loader_Experimental": TTP_QwenVL3_Local_Loader_Experimental,
+    "TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental": TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental,
+    "TTP_Smart_Tile_Loop_Source_Experimental": TTP_Smart_Tile_Loop_Source_Experimental,
+    "TTP_Smart_Tile_Loop_Collect_Experimental": TTP_Smart_Tile_Loop_Collect_Experimental,
+    "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": TTP_Smart_Tile_Image_Upscale_Prep_Experimental,
     "TTP_Smart_Tile_Assemble_Experimental": TTP_Smart_Tile_Assemble_Experimental,
+    "TTP_Smart_Tile_Save_Final_Image_Experimental": TTP_Smart_Tile_Save_Final_Image_Experimental,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1943,5 +3832,12 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TTP_Smart_Tile_Crop_Experimental": "TTP Smart Tile Crop (Experimental)",
     "TTP_Smart_Tile_Visual_Crop_Experimental": "TTP Smart Tile Param Crop (Experimental)",
     "TTP_Smart_Tile_Interactive_Crop_Experimental": "TTP Smart Tile Interactive Crop (Experimental)",
+    "TTP_Smart_Tile_Set_Preview_Experimental": "TTP Smart Tile Set Preview (Experimental)",
+    "TTP_QwenVL3_Local_Loader_Experimental": "TTP QwenVL3 Local Loader (Experimental)",
+    "TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental": "TTP Smart Tile QwenVL Prompt Set Builder (Experimental)",
+    "TTP_Smart_Tile_Loop_Source_Experimental": "TTP Smart Tile Loop Source (Experimental)",
+    "TTP_Smart_Tile_Loop_Collect_Experimental": "TTP Smart Tile Loop Collect (Experimental)",
+    "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": "TTP Smart Tile Image Upscale Prep (Experimental)",
     "TTP_Smart_Tile_Assemble_Experimental": "TTP Smart Tile Assemble (Experimental)",
+    "TTP_Smart_Tile_Save_Final_Image_Experimental": "TTP Smart Tile Save Final Image (Experimental)",
 }
