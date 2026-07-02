@@ -40,21 +40,35 @@ The first experimental version uses a **large sampling area** and a **smaller pa
 
 - `TTP Smart Tile Layout (Experimental)`: stores a JSON tile layout.
 - `TTP Smart Tile Crop (Experimental)`: reads the input image directly, crops padded tile images, and outputs tile metadata plus a debug preview.
-- `TTP Smart Tile Visual Crop (Experimental)`: creates a visual/parameter-based crop plan without JSON, using grid controls plus optional focus regions.
+- `TTP Smart Tile Param Crop (Experimental)`: creates a parameter-based crop plan without JSON, using grid controls plus optional focus regions.
+- `TTP Smart Tile Interactive Crop (Experimental)`: adds a front-end tile editor for still images. It can use a connected image, or you can choose/paste an image directly in the node and drag/resize tile rectangles on top of it.
 - `TTP Smart Tile Assemble (Experimental)`: assembles sampled tiles back into the final image with feathered weighted blending, priority, and importance weights.
 
-Visual workflow without JSON:
+Interactive image workflow:
+
+```text
+TTP Smart Tile Interactive Crop (Experimental)
+  → choose/paste an image or connect image input
+  → drag/resize/add/delete/fill tile rectangles in the node
+  → VAE Encode / Sampler / VAE Decode
+  → TTP Smart Tile Assemble (Experimental)
+  → Final Image
+```
+
+Parameter workflow without JSON:
 
 ```text
 Load Image
-  → TTP Smart Tile Visual Crop (Experimental)
+  → TTP Smart Tile Param Crop (Experimental)
   → Preview the plan output and tune grid/focus parameters
   → VAE Encode / Sampler / VAE Decode
   → TTP Smart Tile Assemble (Experimental)
   → Final Image
 ```
 
-`TTP Smart Tile Visual Crop (Experimental)` is the recommended starting point if you want to tune the tile plan visually in ComfyUI instead of editing JSON. It provides controls for grid columns/rows, grid padding/blending, optional full-image coverage, and two optional focus boxes. Connect its `preview` output to `PreviewImage` while adjusting parameters.
+`TTP Smart Tile Interactive Crop (Experimental)` is the recommended starting point when you want to manually split a still image by visual regions. Use `Choose image` or `Paste image` in the node if you do not want an upstream image loader. The editor stores the selected image and tile layout in hidden widgets so the workflow keeps the current plan.
+
+`TTP Smart Tile Param Crop (Experimental)` is useful when you want a repeatable grid/focus layout from numeric controls. It provides controls for grid columns/rows, grid padding/blending, optional full-image coverage, and two optional focus boxes. Connect its `preview` output to `PreviewImage` while adjusting parameters.
 
 JSON workflow:
 

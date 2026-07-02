@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import cv2
 import numpy as np
@@ -296,15 +298,25 @@ def _ttp_parse_margin_value(value, size):
 
 
 def _ttp_normalize_tile_box(tile, image_width, image_height, defaults):
-    x = _ttp_parse_box_value(tile.get("x", 0), image_width)
-    y = _ttp_parse_box_value(tile.get("y", 0), image_height)
-    w = _ttp_parse_box_value(tile.get("w", tile.get("width", image_width)), image_width)
-    h = _ttp_parse_box_value(tile.get("h", tile.get("height", image_height)), image_height)
+    if all(key in tile for key in ("x0", "y0", "x1", "y1")):
+        x0 = _ttp_parse_box_value(tile.get("x0", 0), image_width)
+        y0 = _ttp_parse_box_value(tile.get("y0", 0), image_height)
+        x1 = _ttp_parse_box_value(tile.get("x1", image_width), image_width)
+        y1 = _ttp_parse_box_value(tile.get("y1", image_height), image_height)
+        x, x_end = sorted((x0, x1))
+        y, y_end = sorted((y0, y1))
+        w = x_end - x
+        h = y_end - y
+    else:
+        x = _ttp_parse_box_value(tile.get("x", 0), image_width)
+        y = _ttp_parse_box_value(tile.get("y", 0), image_height)
+        w = _ttp_parse_box_value(tile.get("w", tile.get("width", image_width)), image_width)
+        h = _ttp_parse_box_value(tile.get("h", tile.get("height", image_height)), image_height)
 
-    x = _ttp_clamp(x, 0, image_width)
-    y = _ttp_clamp(y, 0, image_height)
-    w = _ttp_clamp(w, 1, image_width - x)
-    h = _ttp_clamp(h, 1, image_height - y)
+    x = _ttp_clamp(x, 0, max(0, image_width - 1))
+    y = _ttp_clamp(y, 0, max(0, image_height - 1))
+    w = _ttp_clamp(w, 1, max(1, image_width - x))
+    h = _ttp_clamp(h, 1, max(1, image_height - y))
 
     pad_value = tile.get("pad", tile.get("padding", defaults.get("pad", 0)))
     blend_value = tile.get("blend", tile.get("feather", defaults.get("blend", 32)))
@@ -482,6 +494,86 @@ def _ttp_crop_smart_tiles_from_meta(pil_image, tiles_meta, round_to):
         "tiles": tiles_meta,
     }
     return tiles, tile_meta, positions, pil2tensor(preview)
+
+
+def _ttp_decode_image_data(image_data):
+    text = str(image_data or "").strip()
+    if not text:
+        raise ValueError("No image input was provided. Connect image or use Choose image / Paste image in the interactive tile editor.")
+
+    if "," in text and text.split(",", 1)[0].lower().startswith("data:"):
+        text = text.split(",", 1)[1]
+
+    try:
+        raw = base64.b64decode(text, validate=False)
+        return Image.open(io.BytesIO(raw)).convert("RGB")
+    except Exception as exc:
+        raise ValueError("image_data is not a valid base64 image. Choose or paste the image again in the interactive tile editor.") from exc
+
+
+def _ttp_get_interactive_source_image(image=None, image_data=""):
+    if image is not None:
+        if not isinstance(image, torch.Tensor) or image.ndim != 4 or int(image.shape[0]) <= 0:
+            raise ValueError("image input must be a non-empty ComfyUI IMAGE tensor.")
+        return tensor2pil(image[0].unsqueeze(0)).convert("RGB")
+    return _ttp_decode_image_data(image_data)
+
+
+def _ttp_interactive_layout_with_defaults(layout_json, default_pad, default_blend, include_full_image):
+    try:
+        layout = json.loads(str(layout_json or "").strip() or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid interactive Smart Tile layout JSON: {exc}") from exc
+
+    if not isinstance(layout, dict):
+        raise ValueError("interactive Smart Tile layout must be a JSON object.")
+
+    defaults = {
+        "pad": int(max(0, default_pad)),
+        "blend": int(max(0, default_blend)),
+        "priority": 50,
+        "importance": 1.0,
+    }
+    defaults.update(layout.get("defaults", {}) if isinstance(layout.get("defaults"), dict) else {})
+
+    raw_tiles = layout.get("tiles", [])
+    if not isinstance(raw_tiles, list):
+        raw_tiles = []
+
+    tiles = []
+    if include_full_image:
+        tiles.append({
+            "name": "full_image",
+            "x0": 0.0,
+            "y0": 0.0,
+            "x1": 1.0,
+            "y1": 1.0,
+            "pad": 0,
+            "blend": max(int(default_blend), int(defaults.get("blend", 0))),
+            "priority": 10,
+            "importance": 0.5,
+        })
+
+    for index, tile in enumerate(raw_tiles):
+        if isinstance(tile, dict):
+            tiles.append({
+                "name": tile.get("name", f"tile_{index + 1}"),
+                **tile,
+            })
+
+    if not tiles:
+        tiles = [
+            {"name": "tile_1", "x0": 0.0, "y0": 0.0, "x1": 0.5, "y1": 0.5},
+            {"name": "tile_2", "x0": 0.5, "y0": 0.0, "x1": 1.0, "y1": 0.5},
+            {"name": "tile_3", "x0": 0.0, "y0": 0.5, "x1": 0.5, "y1": 1.0},
+            {"name": "tile_4", "x0": 0.5, "y0": 0.5, "x1": 1.0, "y1": 1.0},
+        ]
+
+    return json.dumps({
+        "type": "ttp_smart_tile_interactive_layout",
+        "defaults": defaults,
+        "tiles": tiles,
+    })
 
 
 class TTP_Smart_Tile_Layout_Experimental:
@@ -672,6 +764,81 @@ class TTP_Smart_Tile_Visual_Crop_Experimental:
 
         tiles_meta = self._add_tile_meta(raw_tiles, image_width, image_height)
         return _ttp_crop_smart_tiles_from_meta(pil_image, tiles_meta, round_to)
+
+
+class TTP_Smart_Tile_Interactive_Crop_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        default_layout = json.dumps({
+            "tiles": [
+                {"name": "tile_1", "x0": 0.0, "y0": 0.0, "x1": 0.5, "y1": 0.5},
+                {"name": "tile_2", "x0": 0.5, "y0": 0.0, "x1": 1.0, "y1": 0.5},
+                {"name": "tile_3", "x0": 0.0, "y0": 0.5, "x1": 0.5, "y1": 1.0},
+                {"name": "tile_4", "x0": 0.5, "y0": 0.5, "x1": 1.0, "y1": 1.0},
+            ]
+        }, separators=(",", ":"))
+        return {
+            "required": {
+                "image_data": ("STRING", {"default": "", "multiline": True}),
+                "layout_json": ("STRING", {"default": default_layout, "multiline": False}),
+                "default_pad": ("INT", {"default": 128, "min": 0, "max": 2048, "step": 8}),
+                "default_blend": ("INT", {"default": 64, "min": 0, "max": 1024, "step": 8}),
+                "include_full_image": ("BOOLEAN", {"default": False}),
+                "round_to": ("INT", {"default": 8, "min": 1, "max": 128, "step": 1}),
+            },
+            "optional": {
+                "image": ("IMAGE",),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "IMAGE", "TTP_SMART_TILE_META", "LIST", "IMAGE", "STRING")
+    RETURN_NAMES = ("source_image", "tiles", "tile_meta", "positions", "preview", "layout_json")
+    FUNCTION = "interactive_crop_tiles"
+    CATEGORY = "TTP/Smart Tile Experimental"
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        image_data = str(kwargs.get("image_data", ""))
+        fingerprint = {
+            "image_data_length": len(image_data),
+            "image_data_tail": image_data[-64:],
+            "layout_json": kwargs.get("layout_json", ""),
+            "default_pad": kwargs.get("default_pad"),
+            "default_blend": kwargs.get("default_blend"),
+            "include_full_image": kwargs.get("include_full_image"),
+            "round_to": kwargs.get("round_to"),
+            "image": type(kwargs.get("image")).__name__ if kwargs.get("image") is not None else None,
+        }
+        return json.dumps(fingerprint, sort_keys=True)
+
+    def interactive_crop_tiles(
+        self,
+        image_data,
+        layout_json,
+        default_pad=128,
+        default_blend=64,
+        include_full_image=False,
+        round_to=8,
+        image=None,
+    ):
+        pil_image = _ttp_get_interactive_source_image(image=image, image_data=image_data)
+        image_width, image_height = pil_image.size
+        normalized_layout_json = _ttp_interactive_layout_with_defaults(
+            layout_json,
+            int(default_pad),
+            int(default_blend),
+            bool(include_full_image),
+        )
+        tiles_meta = _ttp_parse_smart_tile_layout(normalized_layout_json, image_width, image_height)
+        tiles, tile_meta, positions, preview = _ttp_crop_smart_tiles_from_meta(pil_image, tiles_meta, int(round_to))
+        return (
+            pil2tensor(pil_image),
+            tiles,
+            tile_meta,
+            positions,
+            preview,
+            normalized_layout_json,
+        )
 
 
 class TTP_Smart_Tile_Assemble_Experimental:
@@ -1632,6 +1799,7 @@ NODE_CLASS_MAPPINGS = {
     "TTP_Smart_Tile_Layout_Experimental": TTP_Smart_Tile_Layout_Experimental,
     "TTP_Smart_Tile_Crop_Experimental": TTP_Smart_Tile_Crop_Experimental,
     "TTP_Smart_Tile_Visual_Crop_Experimental": TTP_Smart_Tile_Visual_Crop_Experimental,
+    "TTP_Smart_Tile_Interactive_Crop_Experimental": TTP_Smart_Tile_Interactive_Crop_Experimental,
     "TTP_Smart_Tile_Assemble_Experimental": TTP_Smart_Tile_Assemble_Experimental,
 }
 
@@ -1649,6 +1817,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TeaCacheHunyuanVideoSampler": "TTP_TeaCache HunyuanVideo Sampler",
     "TTP_Smart_Tile_Layout_Experimental": "TTP Smart Tile Layout (Experimental)",
     "TTP_Smart_Tile_Crop_Experimental": "TTP Smart Tile Crop (Experimental)",
-    "TTP_Smart_Tile_Visual_Crop_Experimental": "TTP Smart Tile Visual Crop (Experimental)",
+    "TTP_Smart_Tile_Visual_Crop_Experimental": "TTP Smart Tile Param Crop (Experimental)",
+    "TTP_Smart_Tile_Interactive_Crop_Experimental": "TTP Smart Tile Interactive Crop (Experimental)",
     "TTP_Smart_Tile_Assemble_Experimental": "TTP Smart Tile Assemble (Experimental)",
 }
