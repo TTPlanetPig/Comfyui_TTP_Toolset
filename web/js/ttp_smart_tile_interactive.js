@@ -1,7 +1,8 @@
 import { app } from "../../../scripts/app.js";
 
 const NODE_NAME = "TTP_Smart_Tile_Interactive_Crop_Experimental";
-const MAX_TILES = 16;
+const MAX_TILES = 64;
+const MAX_GRID_AXIS = 8;
 const STORAGE_PREFIX = "ttp_smart_tile_interactive_layout";
 
 function widgetByName(node, name) {
@@ -122,12 +123,27 @@ function normalizeTile(node, raw) {
 }
 
 function defaultTiles(node) {
-    return [
-        normalizeTile(node, { x0: 0, y0: 0, x1: 0.5, y1: 0.5 }),
-        normalizeTile(node, { x0: 0.5, y0: 0, x1: 1, y1: 0.5 }),
-        normalizeTile(node, { x0: 0, y0: 0.5, x1: 0.5, y1: 1 }),
-        normalizeTile(node, { x0: 0.5, y0: 0.5, x1: 1, y1: 1 }),
-    ];
+    return gridTiles(node, 2, 2);
+}
+
+function gridTiles(node, columns, rows, bounds = { x0: 0, y0: 0, x1: 1, y1: 1 }) {
+    const cols = Math.max(1, Math.min(MAX_GRID_AXIS, Math.round(Number(columns) || 1)));
+    const rowCount = Math.max(1, Math.min(MAX_GRID_AXIS, Math.round(Number(rows) || 1)));
+    const box = normalizeTile(node, bounds);
+    const width = box.x1 - box.x0;
+    const height = box.y1 - box.y0;
+    const tiles = [];
+    for (let row = 0; row < rowCount; row += 1) {
+        for (let col = 0; col < cols; col += 1) {
+            tiles.push(normalizeTile(node, {
+                x0: box.x0 + width * (col / cols),
+                y0: box.y0 + height * (row / rowCount),
+                x1: box.x0 + width * ((col + 1) / cols),
+                y1: box.y0 + height * ((row + 1) / rowCount),
+            }));
+        }
+    }
+    return tiles;
 }
 
 function sourceStorageKey(node) {
@@ -323,6 +339,27 @@ function createButton(label, onClick, disabled = false) {
         button.onclick = onClick;
     }
     return button;
+}
+
+function createNumberInput(value, min, max) {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = String(min);
+    input.max = String(max);
+    input.step = "1";
+    input.value = String(value);
+    input.style.cssText = [
+        "box-sizing:border-box",
+        "width:54px",
+        "font:inherit",
+        "font-size:12px",
+        "color:#e5e7eb",
+        "background:#172033",
+        "border:1px solid rgba(226,232,240,.35)",
+        "border-radius:4px",
+        "padding:4px 5px",
+    ].join(";");
+    return input;
 }
 
 function readBlobAsDataUrl(blob) {
@@ -747,6 +784,61 @@ function renderEditor(node) {
         createButton("Choose image", () => fileInput.click()),
         createButton("Paste image", () => pasteImageFromClipboard(node))
     );
+
+    const gridControls = document.createElement("div");
+    gridControls.style.cssText = "display:flex;gap:6px;align-items:center;flex-wrap:wrap;";
+    const gridLabel = document.createElement("span");
+    gridLabel.textContent = "Grid";
+    gridLabel.style.cssText = "opacity:.78;";
+    const gridColumns = createNumberInput(node.ttpSmartTileGridColumns ?? 2, 1, MAX_GRID_AXIS);
+    const gridRows = createNumberInput(node.ttpSmartTileGridRows ?? 2, 1, MAX_GRID_AXIS);
+    const updateGridValues = () => {
+        node.ttpSmartTileGridColumns = Math.max(1, Math.min(MAX_GRID_AXIS, Math.round(Number(gridColumns.value) || 1)));
+        node.ttpSmartTileGridRows = Math.max(1, Math.min(MAX_GRID_AXIS, Math.round(Number(gridRows.value) || 1)));
+        gridColumns.value = String(node.ttpSmartTileGridColumns);
+        gridRows.value = String(node.ttpSmartTileGridRows);
+    };
+    const refreshGridValues = () => {
+        updateGridValues();
+        renderEditor(node);
+    };
+    gridColumns.onchange = refreshGridValues;
+    gridRows.onchange = refreshGridValues;
+    updateGridValues();
+    const gridCount = node.ttpSmartTileGridColumns * node.ttpSmartTileGridRows;
+    const subdivideCount = tiles.length - 1 + gridCount;
+    gridControls.append(
+        gridLabel,
+        gridColumns,
+        document.createTextNode("x"),
+        gridRows,
+        createButton("Replace grid", () => {
+            updateGridValues();
+            const nextTiles = gridTiles(node, node.ttpSmartTileGridColumns, node.ttpSmartTileGridRows);
+            node.ttpSmartTileStatus = "";
+            writeLayout(node, nextTiles, 0);
+            renderEditor(node);
+        }, gridCount > MAX_TILES),
+        createButton(`Grid in T${selectedIndex + 1}`, () => {
+            updateGridValues();
+            const selectedTile = tiles[selectedIndex] ?? { x0: 0, y0: 0, x1: 1, y1: 1 };
+            const replacement = gridTiles(node, node.ttpSmartTileGridColumns, node.ttpSmartTileGridRows, selectedTile);
+            if (tiles.length - 1 + replacement.length > MAX_TILES) {
+                node.ttpSmartTileStatus = `Grid would create ${tiles.length - 1 + replacement.length} tiles; max is ${MAX_TILES}.`;
+                renderEditor(node);
+                return;
+            }
+            const nextTiles = [
+                ...tiles.slice(0, selectedIndex),
+                ...replacement,
+                ...tiles.slice(selectedIndex + 1),
+            ];
+            node.ttpSmartTileStatus = "";
+            writeLayout(node, nextTiles, selectedIndex);
+            renderEditor(node);
+        }, subdivideCount > MAX_TILES)
+    );
+    controls.append(gridControls);
 
     for (const [index] of tiles.entries()) {
         const button = createButton(`T${index + 1}`, () => {

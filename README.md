@@ -66,7 +66,7 @@ Load Image
   → Final Image
 ```
 
-`TTP Smart Tile Interactive Crop (Experimental)` is the recommended starting point when you want to manually split a still image by visual regions. Use `Choose image` or `Paste image` in the node if you do not want an upstream image loader. The editor stores the selected image and tile layout in hidden widgets so the workflow keeps the current plan.
+`TTP Smart Tile Interactive Crop (Experimental)` is the recommended starting point when you want to manually split a still image by visual regions. Use `Choose image` or `Paste image` in the node if you do not want an upstream image loader. The editor can generate a standard grid from column/row numbers, replace the full layout with that grid, or subdivide the currently selected tile. It also stores the selected image and tile layout in hidden widgets so the workflow keeps the current plan.
 
 `TTP Smart Tile Param Crop (Experimental)` is useful when you want a repeatable grid/focus layout from numeric controls. It provides controls for grid columns/rows, grid padding/blending, optional full-image coverage, and two optional focus boxes. Connect its `preview` output to `PreviewImage` while adjusting parameters.
 
