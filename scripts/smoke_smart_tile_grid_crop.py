@@ -115,22 +115,48 @@ assert_equal([tile["sample_box"] for tile in tiles_meta], expected_sample_boxes,
 _tiles, crop_meta, _positions, _preview = ttp._ttp_crop_smart_tiles_from_meta(
     Image.new("RGB", (900, 600), "white"),
     [dict(tile) for tile in tiles_meta],
-    1,
+    8,
+)
+expected_batched_sample_boxes = [
+    [0, 0, 432, 328],
+    [236, 0, 432, 328],
+    [468, 0, 432, 328],
+    [0, 136, 432, 328],
+    [236, 136, 432, 328],
+    [468, 136, 432, 328],
+    [0, 272, 432, 328],
+    [236, 272, 432, 328],
+    [468, 272, 432, 328],
+]
+assert_equal(
+    [tile["sample_box"] for tile in crop_meta["tiles"]],
+    expected_batched_sample_boxes,
+    "3x3 batch crops should expand inward with real image pixels instead of transport padding",
 )
 assert_equal(
     crop_meta["tiles"][0]["tile_canvas_box"],
-    [0, 0, 364, 264],
-    "top-left real crop box inside batch canvas",
+    [0, 0, 432, 328],
+    "top-left crop should fill the batch canvas with real pixels",
 )
 assert_equal(
     crop_meta["tiles"][0]["tile_canvas_size"],
-    [428, 328],
-    "top-left transport canvas should match largest crop",
+    [432, 328],
+    "top-left batch canvas should match largest crop",
 )
 assert_equal(
     crop_meta["tiles"][8]["tile_canvas_box"],
-    [0, 0, 364, 264],
-    "bottom-right real crop box inside batch canvas",
+    [0, 0, 432, 328],
+    "bottom-right crop should fill the batch canvas with real pixels",
+)
+assert_equal(
+    crop_meta["tiles"][0]["overlap_edges_px_source"],
+    {"left": 0, "right": 132, "top": 0, "bottom": 128},
+    "top-left batch crop should grow only inward",
+)
+assert_equal(
+    crop_meta["tiles"][8]["overlap_edges_px_source"],
+    {"left": 132, "right": 0, "top": 128, "bottom": 0},
+    "bottom-right batch crop should grow only inward",
 )
 
 assert_equal(

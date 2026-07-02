@@ -499,9 +499,70 @@ def _ttp_pad_image_to_size(image, target_width, target_height):
     return padded
 
 
+def _ttp_expand_axis_to_size(start, length, target_length, limit, allow_before, allow_after):
+    start = int(start)
+    length = int(length)
+    target_length = min(int(target_length), int(limit))
+    if target_length <= length:
+        return start, length
+
+    deficit = target_length - length
+    before = 0
+    after = 0
+    if allow_before:
+        before = min(deficit, start)
+        deficit -= before
+    if allow_after:
+        after_space = max(0, int(limit) - (start + length))
+        after = min(deficit, after_space)
+        deficit -= after
+    if allow_before and deficit > 0:
+        before_space = max(0, start - before)
+        extra_before = min(deficit, before_space)
+        before += extra_before
+        deficit -= extra_before
+
+    return start - before, length + before + after
+
+
+def _ttp_actual_overlap_edges_from_sample(tile):
+    sx, sy, sw, sh = tile["sample_box"]
+    x, y, w, h = tile["core_box"]
+    return {
+        "left": max(0, x - sx),
+        "right": max(0, sx + sw - (x + w)),
+        "top": max(0, y - sy),
+        "bottom": max(0, sy + sh - (y + h)),
+    }
+
+
+def _ttp_expand_smart_tile_samples_to_batch(tiles_meta, image_width, image_height, target_width, target_height):
+    for tile in tiles_meta:
+        sx, sy, sw, sh = tile["sample_box"]
+        edges = tile.get("overlap_edges_px_source", {})
+        sx, sw = _ttp_expand_axis_to_size(
+            sx,
+            sw,
+            target_width,
+            image_width,
+            int(edges.get("left", 0)) > 0,
+            int(edges.get("right", 0)) > 0,
+        )
+        sy, sh = _ttp_expand_axis_to_size(
+            sy,
+            sh,
+            target_height,
+            image_height,
+            int(edges.get("top", 0)) > 0,
+            int(edges.get("bottom", 0)) > 0,
+        )
+        tile["sample_box"] = [sx, sy, sw, sh]
+        tile["overlap_edges_px_source"] = _ttp_actual_overlap_edges_from_sample(tile)
+    return tiles_meta
+
+
 def _ttp_crop_smart_tiles_from_meta(pil_image, tiles_meta, round_to):
     image_width, image_height = pil_image.size
-    tile_images = []
     positions = []
     for tile in tiles_meta:
         sx, sy, sw, sh = tile["sample_box"]
@@ -514,17 +575,22 @@ def _ttp_crop_smart_tiles_from_meta(pil_image, tiles_meta, round_to):
         sw = min(sw, image_width - sx)
         sh = min(sh, image_height - sy)
         tile["sample_box"] = [sx, sy, sw, sh]
-
-        crop = pil_image.crop((sx, sy, sx + sw, sy + sh))
-        tile_images.append(crop)
-        tile["tile_canvas_box"] = [0, 0, sw, sh]
         x, y, w, h = tile["paste_box"]
         positions.append((x, y, x + w, y + h))
 
-    max_tile_width = max(tile.width for tile in tile_images)
-    max_tile_height = max(tile.height for tile in tile_images)
+    max_tile_width = max(tile["sample_box"][2] for tile in tiles_meta)
+    max_tile_height = max(tile["sample_box"][3] for tile in tiles_meta)
     max_tile_width = max(1, _ttp_round_to(max_tile_width, round_to))
     max_tile_height = max(1, _ttp_round_to(max_tile_height, round_to))
+    _ttp_expand_smart_tile_samples_to_batch(tiles_meta, image_width, image_height, max_tile_width, max_tile_height)
+
+    tile_images = []
+    for tile in tiles_meta:
+        sx, sy, sw, sh = tile["sample_box"]
+        crop = pil_image.crop((sx, sy, sx + sw, sy + sh))
+        tile_images.append(crop)
+        tile["tile_canvas_box"] = [0, 0, sw, sh]
+
     tile_tensors = []
     for tile, crop in zip(tiles_meta, tile_images):
         tile["tile_canvas_size"] = [max_tile_width, max_tile_height]
