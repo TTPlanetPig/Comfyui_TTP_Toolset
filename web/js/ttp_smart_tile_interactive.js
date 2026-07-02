@@ -4,6 +4,7 @@ import { api } from "../../../scripts/api.js";
 const NODE_NAME = "TTP_Smart_Tile_Interactive_Crop_Experimental";
 const MAX_TILES = 64;
 const MAX_GRID_AXIS = 8;
+const dragThresholdPx = 3;
 const STORAGE_PREFIX = "ttp_smart_tile_interactive_layout";
 
 function widgetByName(node, name) {
@@ -588,17 +589,26 @@ function renderEditor(node) {
         const index = Math.max(0, Math.min(tiles.length - 1, selected));
         const dragMode = resizeHit(tiles[index], point) ? "resize" : mode;
         const targetRegion = regionElements.get(index) ?? region;
-        if (targetRegion) {
-            targetRegion.style.zIndex = "120";
-        }
         node.ttpSmartTileSelectedIndex = index;
-        event.currentTarget.setPointerCapture?.(event.pointerId);
         const startPoint = pointFromEvent(event);
+        const startClientX = event.clientX;
+        const startClientY = event.clientY;
         const startTiles = tiles.map((tile) => ({ ...tile }));
         const startTile = startTiles[index];
+        let hasDragged = false;
         const apply = (moveEvent) => {
             moveEvent.preventDefault();
             moveEvent.stopPropagation();
+            const movedPx = Math.hypot(moveEvent.clientX - startClientX, moveEvent.clientY - startClientY);
+            if (!hasDragged && movedPx < dragThresholdPx) {
+                return;
+            }
+            if (!hasDragged) {
+                hasDragged = true;
+                if (targetRegion) {
+                    targetRegion.style.zIndex = "120";
+                }
+            }
             const nextPoint = pointFromEvent(moveEvent);
             const dx = nextPoint.x - startPoint.x;
             const dy = nextPoint.y - startPoint.y;
@@ -622,17 +632,22 @@ function renderEditor(node) {
             }
             scheduleCanvas(node);
         };
-        const end = (endEvent) => {
-            endEvent.preventDefault();
-            endEvent.stopPropagation();
-            event.currentTarget.releasePointerCapture?.(endEvent.pointerId);
+        const cleanup = () => {
             window.removeEventListener("pointermove", apply, true);
-            window.removeEventListener("pointerup", end, true);
+            window.removeEventListener("pointerup", finish, true);
+            window.removeEventListener("pointercancel", finish, true);
+            window.removeEventListener("blur", finish, true);
+        };
+        const finish = (endEvent) => {
+            endEvent?.preventDefault?.();
+            endEvent?.stopPropagation?.();
+            cleanup();
             renderEditor(node);
         };
         window.addEventListener("pointermove", apply, true);
-        window.addEventListener("pointerup", end, true);
-        apply(event);
+        window.addEventListener("pointerup", finish, true);
+        window.addEventListener("pointercancel", finish, true);
+        window.addEventListener("blur", finish, true);
     };
 
     for (const index of renderOrder) {
@@ -695,51 +710,66 @@ function renderEditor(node) {
             return;
         }
         const startPoint = point;
-        const nextTiles = [...tiles, normalizeTile(node, { x0: point.x, y0: point.y, x1: point.x, y1: point.y })];
-        const newIndex = nextTiles.length - 1;
-        writeLayout(node, nextTiles, newIndex);
-        const tempRegion = document.createElement("div");
-        tempRegion.textContent = String(newIndex + 1);
-        tempRegion.style.cssText = [
-            "position:absolute",
-            "box-sizing:border-box",
-            "display:flex",
-            "align-items:center",
-            "justify-content:center",
-            "border:2px solid #f8fafc",
-            "background:rgba(14,165,233,.28)",
-            "color:#f8fafc",
-            "font-weight:800",
-            "letter-spacing:0",
-            "box-shadow:0 0 0 1px rgba(15,23,42,.85),0 0 16px rgba(14,165,233,.55)",
-            "z-index:130",
-            "pointer-events:none",
-        ].join(";");
-        stage.append(tempRegion);
+        const startClientX = event.clientX;
+        const startClientY = event.clientY;
+        const newIndex = tiles.length;
+        let hasDragged = false;
+        let tempRegion = null;
         const apply = (moveEvent) => {
             moveEvent.preventDefault();
             moveEvent.stopPropagation();
+            const movedPx = Math.hypot(moveEvent.clientX - startClientX, moveEvent.clientY - startClientY);
+            if (!hasDragged && movedPx < dragThresholdPx) {
+                return;
+            }
+            if (!hasDragged) {
+                hasDragged = true;
+                tempRegion = document.createElement("div");
+                tempRegion.textContent = String(newIndex + 1);
+                tempRegion.style.cssText = [
+                    "position:absolute",
+                    "box-sizing:border-box",
+                    "display:flex",
+                    "align-items:center",
+                    "justify-content:center",
+                    "border:2px solid #f8fafc",
+                    "background:rgba(14,165,233,.28)",
+                    "color:#f8fafc",
+                    "font-weight:800",
+                    "letter-spacing:0",
+                    "box-shadow:0 0 0 1px rgba(15,23,42,.85),0 0 16px rgba(14,165,233,.55)",
+                    "z-index:130",
+                    "pointer-events:none",
+                ].join(";");
+                stage.append(tempRegion);
+            }
             const nextPoint = pointFromEvent(moveEvent);
-            const currentTiles = (node.ttpSmartTileLayout?.tiles ?? nextTiles).map((tile) => ({ ...tile }));
-            currentTiles[newIndex] = normalizeTile(node, {
+            const nextTiles = [...tiles, normalizeTile(node, {
                 x0: startPoint.x,
                 y0: startPoint.y,
                 x1: nextPoint.x,
                 y1: nextPoint.y,
-            });
-            writeLayout(node, currentTiles, newIndex);
-            setRegionStyle(tempRegion, currentTiles[newIndex]);
+            })];
+            writeLayout(node, nextTiles, newIndex);
+            setRegionStyle(tempRegion, nextTiles[newIndex]);
             scheduleCanvas(node);
         };
-        const end = (endEvent) => {
-            endEvent.preventDefault();
-            endEvent.stopPropagation();
+        const cleanup = () => {
             window.removeEventListener("pointermove", apply, true);
-            window.removeEventListener("pointerup", end, true);
+            window.removeEventListener("pointerup", finish, true);
+            window.removeEventListener("pointercancel", finish, true);
+            window.removeEventListener("blur", finish, true);
+        };
+        const finish = (endEvent) => {
+            endEvent?.preventDefault?.();
+            endEvent?.stopPropagation?.();
+            cleanup();
             renderEditor(node);
         };
         window.addEventListener("pointermove", apply, true);
-        window.addEventListener("pointerup", end, true);
+        window.addEventListener("pointerup", finish, true);
+        window.addEventListener("pointercancel", finish, true);
+        window.addEventListener("blur", finish, true);
     });
 
     const controls = document.createElement("div");
