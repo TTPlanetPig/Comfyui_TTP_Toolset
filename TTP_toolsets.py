@@ -285,7 +285,16 @@ def _ttp_round_to(value, multiple):
     return int(np.ceil(value / multiple) * multiple)
 
 
-def _ttp_parse_box_value(value, size):
+def _ttp_value_is_normalized(value):
+    if not isinstance(value, (int, float)):
+        return False
+    numeric = float(value)
+    return 0.0 <= numeric <= 1.0
+
+
+def _ttp_parse_box_value(value, size, prefer_normalized=False):
+    if prefer_normalized and _ttp_value_is_normalized(value):
+        return int(round(float(value) * size))
     if isinstance(value, float) and 0.0 <= value <= 1.0:
         return int(round(value * size))
     return int(round(value))
@@ -299,19 +308,28 @@ def _ttp_parse_margin_value(value, size):
 
 def _ttp_normalize_tile_box(tile, image_width, image_height, defaults):
     if all(key in tile for key in ("x0", "y0", "x1", "y1")):
-        x0 = _ttp_parse_box_value(tile.get("x0", 0), image_width)
-        y0 = _ttp_parse_box_value(tile.get("y0", 0), image_height)
-        x1 = _ttp_parse_box_value(tile.get("x1", image_width), image_width)
-        y1 = _ttp_parse_box_value(tile.get("y1", image_height), image_height)
+        box_values = [tile.get("x0", 0), tile.get("y0", 0), tile.get("x1", image_width), tile.get("y1", image_height)]
+        prefer_normalized = all(_ttp_value_is_normalized(value) for value in box_values)
+        x0 = _ttp_parse_box_value(tile.get("x0", 0), image_width, prefer_normalized)
+        y0 = _ttp_parse_box_value(tile.get("y0", 0), image_height, prefer_normalized)
+        x1 = _ttp_parse_box_value(tile.get("x1", image_width), image_width, prefer_normalized)
+        y1 = _ttp_parse_box_value(tile.get("y1", image_height), image_height, prefer_normalized)
         x, x_end = sorted((x0, x1))
         y, y_end = sorted((y0, y1))
         w = x_end - x
         h = y_end - y
     else:
-        x = _ttp_parse_box_value(tile.get("x", 0), image_width)
-        y = _ttp_parse_box_value(tile.get("y", 0), image_height)
-        w = _ttp_parse_box_value(tile.get("w", tile.get("width", image_width)), image_width)
-        h = _ttp_parse_box_value(tile.get("h", tile.get("height", image_height)), image_height)
+        box_values = [
+            tile.get("x", 0),
+            tile.get("y", 0),
+            tile.get("w", tile.get("width", image_width)),
+            tile.get("h", tile.get("height", image_height)),
+        ]
+        prefer_normalized = all(_ttp_value_is_normalized(value) for value in box_values)
+        x = _ttp_parse_box_value(tile.get("x", 0), image_width, prefer_normalized)
+        y = _ttp_parse_box_value(tile.get("y", 0), image_height, prefer_normalized)
+        w = _ttp_parse_box_value(tile.get("w", tile.get("width", image_width)), image_width, prefer_normalized)
+        h = _ttp_parse_box_value(tile.get("h", tile.get("height", image_height)), image_height, prefer_normalized)
 
     x = _ttp_clamp(x, 0, max(0, image_width - 1))
     y = _ttp_clamp(y, 0, max(0, image_height - 1))
@@ -362,6 +380,57 @@ def _ttp_expand_grid_tiles(grid, defaults):
     return tiles
 
 
+def _ttp_intervals_overlap(a0, a1, b0, b1):
+    return min(int(a1), int(b1)) > max(int(a0), int(b0))
+
+
+def _ttp_neighbor_overlap_edges(tiles_meta, tile_index):
+    tile = tiles_meta[int(tile_index)]
+    x, y, w, h = tile["core_box"]
+    x0, y0, x1, y1 = x, y, x + w, y + h
+    pad = max(0, int(tile.get("pad", 0)))
+    edges = {"left": 0, "right": 0, "top": 0, "bottom": 0}
+    if pad <= 0:
+        return edges
+
+    tolerance = 1
+    for index, other in enumerate(tiles_meta):
+        if index == int(tile_index):
+            continue
+        ox, oy, ow, oh = other["core_box"]
+        ox0, oy0, ox1, oy1 = ox, oy, ox + ow, oy + oh
+        vertical_overlap = _ttp_intervals_overlap(y0, y1, oy0, oy1)
+        horizontal_overlap = _ttp_intervals_overlap(x0, x1, ox0, ox1)
+        if vertical_overlap and (abs(ox1 - x0) <= tolerance or ox0 < x0 < ox1):
+            edges["left"] = pad
+        if vertical_overlap and (abs(ox0 - x1) <= tolerance or ox0 < x1 < ox1):
+            edges["right"] = pad
+        if horizontal_overlap and (abs(oy1 - y0) <= tolerance or oy0 < y0 < oy1):
+            edges["top"] = pad
+        if horizontal_overlap and (abs(oy0 - y1) <= tolerance or oy0 < y1 < oy1):
+            edges["bottom"] = pad
+    return edges
+
+
+def _ttp_add_smart_tile_sample_boxes(tiles_meta, image_width, image_height):
+    for index, tile in enumerate(tiles_meta):
+        x, y, w, h = tile["core_box"]
+        edges = _ttp_neighbor_overlap_edges(tiles_meta, index)
+        sample_left = _ttp_clamp(x - edges["left"], 0, image_width)
+        sample_top = _ttp_clamp(y - edges["top"], 0, image_height)
+        sample_right = _ttp_clamp(x + w + edges["right"], 0, image_width)
+        sample_bottom = _ttp_clamp(y + h + edges["bottom"], 0, image_height)
+        tile["overlap_edges_px_source"] = edges
+        tile["sample_box"] = [
+            sample_left,
+            sample_top,
+            max(1, sample_right - sample_left),
+            max(1, sample_bottom - sample_top),
+        ]
+        tile["paste_box"] = [x, y, w, h]
+    return tiles_meta
+
+
 def _ttp_parse_smart_tile_layout(layout_text, image_width, image_height):
     try:
         layout = json.loads(layout_text)
@@ -391,22 +460,9 @@ def _ttp_parse_smart_tile_layout(layout_text, image_width, image_height):
             raise ValueError(f"Smart Tile entry {index} must be an object")
         normalized = _ttp_normalize_tile_box({**tile, "id": index}, image_width, image_height, defaults)
         normalized["id"] = index
-        x, y, w, h = normalized["core_box"]
-        pad = normalized["pad"]
-        sample_left = _ttp_clamp(x - pad, 0, image_width)
-        sample_top = _ttp_clamp(y - pad, 0, image_height)
-        sample_right = _ttp_clamp(x + w + pad, 0, image_width)
-        sample_bottom = _ttp_clamp(y + h + pad, 0, image_height)
-        normalized["sample_box"] = [
-            sample_left,
-            sample_top,
-            max(1, sample_right - sample_left),
-            max(1, sample_bottom - sample_top),
-        ]
-        normalized["paste_box"] = [x, y, w, h]
         normalized_tiles.append(normalized)
 
-    return normalized_tiles
+    return _ttp_add_smart_tile_sample_boxes(normalized_tiles, image_width, image_height)
 
 
 def _ttp_create_feather_mask(width, height, feather):
@@ -676,21 +732,8 @@ class TTP_Smart_Tile_Visual_Crop_Experimental:
         for index, tile in enumerate(raw_tiles):
             normalized = _ttp_normalize_tile_box({**tile, "id": index}, image_width, image_height, {})
             normalized["id"] = index
-            x, y, w, h = normalized["core_box"]
-            pad = normalized["pad"]
-            sample_left = _ttp_clamp(x - pad, 0, image_width)
-            sample_top = _ttp_clamp(y - pad, 0, image_height)
-            sample_right = _ttp_clamp(x + w + pad, 0, image_width)
-            sample_bottom = _ttp_clamp(y + h + pad, 0, image_height)
-            normalized["sample_box"] = [
-                sample_left,
-                sample_top,
-                max(1, sample_right - sample_left),
-                max(1, sample_bottom - sample_top),
-            ]
-            normalized["paste_box"] = [x, y, w, h]
             tiles_meta.append(normalized)
-        return tiles_meta
+        return _ttp_add_smart_tile_sample_boxes(tiles_meta, image_width, image_height)
 
     def visual_crop_tiles(
         self,

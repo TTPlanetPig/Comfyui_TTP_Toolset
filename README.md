@@ -36,10 +36,10 @@ https://github.com/user-attachments/assets/af06b9d3-9c84-4a83-ba90-eb4ec4bb2e99
 
 The **Smart Tile Experimental** nodes provide a manual tile workflow that keeps the existing automatic tile nodes unchanged. They are designed for layouts where you want to split the image by visual structure, such as face, hands, subject, clothes, foreground, and background.
 
-The first experimental version uses a **large sampling area** and a **smaller paste area**:
+The first experimental version uses a **larger overlap sampling area** around real tile seams and a **smaller paste area** for the final composition:
 
 - `TTP Smart Tile Layout (Experimental)`: stores a JSON tile layout.
-- `TTP Smart Tile Crop (Experimental)`: reads the input image directly, crops padded tile images, and outputs tile metadata plus a debug preview.
+- `TTP Smart Tile Crop (Experimental)`: reads the input image directly, crops tile images with seam-only overlap, and outputs tile metadata plus a debug preview.
 - `TTP Smart Tile Param Crop (Experimental)`: creates a parameter-based crop plan without JSON, using grid controls plus optional focus regions.
 - `TTP Smart Tile Interactive Crop (Experimental)`: adds a front-end tile editor for still images. It uses the same official ComfyUI image upload/dropdown widget style as `Load Image`, can also use a connected `source_image`, and lets you drag/resize tile rectangles on top of the image.
 - `TTP Smart Tile Assemble (Experimental)`: assembles sampled tiles back into the final image with feathered weighted blending, priority, and importance weights.
@@ -68,7 +68,7 @@ Load Image
 
 `TTP Smart Tile Interactive Crop (Experimental)` is the recommended starting point when you want to manually split a still image by visual regions. Its `image` input follows the official `Load Image` pattern, so uploads go to ComfyUI's input folder and the workflow stores the selected filename instead of embedding the whole image. The editor can generate a standard grid from column/row numbers, replace the full layout with that grid, or subdivide the currently selected tile. It stores the tile layout in a hidden widget so the workflow keeps the current plan.
 
-`TTP Smart Tile Param Crop (Experimental)` is useful when you want a repeatable grid/focus layout from numeric controls. It provides controls for grid columns/rows, grid padding/blending, optional full-image coverage, and two optional focus boxes. Connect its `preview` output to `PreviewImage` while adjusting parameters.
+`TTP Smart Tile Param Crop (Experimental)` is useful when you want a repeatable grid/focus layout from numeric controls. It provides controls for grid columns/rows, grid overlap/blending, optional full-image coverage, and two optional focus boxes. Connect its `preview` output to `PreviewImage` while adjusting parameters.
 
 JSON workflow:
 
@@ -118,7 +118,7 @@ Example layout:
 }
 ```
 
-Coordinates can be pixel values or normalized values from `0.0` to `1.0`. `pad` expands the crop sent into the sampler, while `blend`, `priority`, and `importance` control how the sampled tile is pasted back.
+Coordinates can be pixel values or normalized values from `0.0` to `1.0`. A rectangle whose coordinates are all in `0..1` is treated as normalized, including browser-serialized `0` and `1` edges. `pad` is seam overlap: it expands only the tile edges that touch another tile. Outer canvas edges and non-adjacent gap edges are not expanded. `blend`, `priority`, and `importance` control how the sampled tile is pasted back.
 
 ### **1. Image Tile Batch Node**
 This node cuts an image into pieces automatically based on your specified width and height. It also records the necessary information for further processing.
