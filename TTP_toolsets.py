@@ -1010,6 +1010,102 @@ def _ttp_find_pixel_alignment_offset_gpu(
         return None
 
 
+def _ttp_find_pixel_alignment_offset_torch_canvas(
+    region,
+    reference_t,
+    weights_t,
+    out_x,
+    out_y,
+    mask,
+    radius=0,
+    mode="off",
+    max_samples=32768,
+):
+    radius = max(0, int(radius))
+    if radius <= 0 or str(mode) == "off":
+        return (0, 0), {"device": "off", "samples": 0, "fallback": False}
+    if region.size == 0 or reference_t is None or int(reference_t.numel()) <= 0:
+        device_name = str(getattr(reference_t, "device", "gpu"))
+        return (0, 0), {"device": device_name, "samples": 0, "fallback": False}
+
+    align_weights = _ttp_alignment_weight_mask(mask, mode)
+    if float(align_weights.sum()) < 16.0:
+        return (0, 0), {"device": str(reference_t.device), "samples": 0, "fallback": False}
+
+    height, width = region.shape[:2]
+    ys, xs = np.nonzero(align_weights > 1e-6)
+    if len(xs) < 16:
+        return (0, 0), {"device": str(reference_t.device), "samples": int(len(xs)), "fallback": False}
+    max_samples = max(256, int(max_samples or 32768))
+    original_samples = int(len(xs))
+    if len(xs) > max_samples:
+        indices = np.linspace(0, len(xs) - 1, max_samples).astype(np.int64)
+        xs = xs[indices]
+        ys = ys[indices]
+
+    offsets = [(dx, dy) for dy in range(-radius, radius + 1) for dx in range(-radius, radius + 1)]
+    if not offsets:
+        return (0, 0), {"device": str(reference_t.device), "samples": int(len(xs)), "fallback": False}
+
+    try:
+        with torch.inference_mode():
+            device = reference_t.device
+            reference_t = reference_t.to(device=device, dtype=torch.float32)
+            xs_t = torch.as_tensor(xs.astype(np.int64), device=device)
+            ys_t = torch.as_tensor(ys.astype(np.int64), device=device)
+            sample_region = torch.as_tensor(region[ys, xs].astype(np.float32), device=device)
+            sample_weight = torch.as_tensor(align_weights[ys, xs].astype(np.float32), device=device)
+            ref_flat = reference_t.reshape(-1, reference_t.shape[-1])
+            if weights_t is not None:
+                weight_flat = weights_t[:, :, 0].to(device=device, dtype=torch.float32).reshape(-1)
+            else:
+                weight_flat = None
+
+            offset_t = torch.as_tensor(offsets, dtype=torch.int64, device=device)
+            ref_h, ref_w = int(reference_t.shape[0]), int(reference_t.shape[1])
+            best_score = None
+            best_offset = (0, 0)
+            chunk_size = max(8, min(512, int(4000000 // max(1, len(xs)))))
+            for start in range(0, int(offset_t.shape[0]), chunk_size):
+                chunk = offset_t[start:start + chunk_size]
+                dx = chunk[:, 0:1]
+                dy = chunk[:, 1:2]
+                rx = int(out_x) + dx + xs_t[None, :]
+                ry = int(out_y) + dy + ys_t[None, :]
+                valid = (rx >= 0) & (rx < ref_w) & (ry >= 0) & (ry < ref_h)
+                flat_index = torch.clamp(ry, 0, ref_h - 1) * ref_w + torch.clamp(rx, 0, ref_w - 1)
+                local_weight = sample_weight[None, :] * valid.to(torch.float32)
+                if weight_flat is not None:
+                    local_weight = local_weight * (weight_flat[flat_index] > 1e-6).to(torch.float32)
+                weight_sum = local_weight.sum(dim=1)
+                usable = weight_sum >= 16.0
+                if not bool(torch.any(usable).item()):
+                    continue
+                ref_samples = ref_flat[flat_index]
+                diff = sample_region[None, :, :] - ref_samples
+                mse = torch.mean(diff * diff, dim=2)
+                scores = (mse * local_weight).sum(dim=1) / torch.clamp(weight_sum, min=1e-6)
+                penalty = (torch.abs(chunk[:, 0]).to(torch.float32) + torch.abs(chunk[:, 1]).to(torch.float32)) * 1e-5
+                scores = scores + penalty
+                scores = torch.where(usable, scores, torch.full_like(scores, float("inf")))
+                score, index = torch.min(scores, dim=0)
+                score_value = float(score.item())
+                if np.isfinite(score_value) and (best_score is None or score_value < best_score):
+                    best_score = score_value
+                    best = chunk[int(index.item())]
+                    best_offset = (int(best[0].item()), int(best[1].item()))
+            return best_offset, {
+                "device": str(device),
+                "samples": int(len(xs)),
+                "source_samples": int(original_samples),
+                "candidates": int(len(offsets)),
+                "fallback": False,
+            }
+    except Exception as error:
+        print(f"[TTP Smart Tile] pixel alignment torch canvas failed: {type(error).__name__}: {error}")
+        return None
+
+
 def _ttp_find_pixel_alignment_offset_auto(
     region,
     reference,
@@ -3440,7 +3536,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 "min_tile_scale_ratio": ("FLOAT", {"default": 0.95, "min": 0.25, "max": 2.0, "step": 0.05}),
                 "context_tile_weight": ("FLOAT", {"default": 0.25, "min": 0.0, "max": 1.0, "step": 0.05}),
                 "assemble_device": (["auto", "cpu", "gpu"], {"default": "auto"}),
-                "assemble_mode": (["always", "final_only"], {"default": "always"}),
+                "assemble_mode": (["final_only", "always"], {"default": "final_only"}),
             },
             "optional": {
                 "sampled_tiles": ("IMAGE",),
@@ -3476,7 +3572,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
         min_tile_scale_ratio=0.95,
         context_tile_weight=0.25,
         assemble_device="auto",
-        assemble_mode="always",
+        assemble_mode="final_only",
         sampled_tiles=None,
         tile_meta=None,
         tile_set=None,
@@ -3505,7 +3601,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
         elif len(tile_images) != len(tiles_info):
             raise ValueError(f"tile_set images ({len(tile_images)}) do not match tile_meta tiles ({len(tiles_info)})")
 
-        if str(assemble_mode or "always") == "final_only" and done is not None and not bool(done):
+        if str(assemble_mode or "final_only") == "final_only" and done is not None and not bool(done):
             return _ttp_assemble_placeholder_output(tile_images, base_image=base_image, source_image=source_image)
 
         original_width, original_height = tile_meta["original_size"]
@@ -3536,10 +3632,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
         assemble_device_mode = str(assemble_device or "auto").lower()
         assemble_torch_device = _ttp_alignment_torch_device(assemble_device_mode)
         assemble_fallback_reason = ""
-        if assemble_torch_device is not None and str(pixel_alignment) != "off":
-            assemble_fallback_reason = "pixel_alignment_requires_cpu_canvas"
-            assemble_torch_device = None
-        elif assemble_torch_device is None and assemble_device_mode == "gpu":
+        if assemble_torch_device is None and assemble_device_mode == "gpu":
             assemble_fallback_reason = "gpu_unavailable"
         use_gpu_assemble = assemble_torch_device is not None
 
@@ -3699,18 +3792,64 @@ class TTP_Smart_Tile_Assemble_Experimental:
 
             region = np.array(paste_region).astype(np.float32) / 255.0
             if str(pixel_alignment) != "off":
-                reference = canvas / np.maximum(weights, 1e-6)
-                dx, dy, align_info = _ttp_find_pixel_alignment_offset_auto(
-                    region,
-                    reference,
-                    weights,
-                    out_x,
-                    out_y,
-                    coverage_mask,
-                    int(pixel_alignment_radius),
-                    str(pixel_alignment),
-                    str(pixel_alignment_device),
-                )
+                align_info = None
+                if use_gpu_assemble and str(pixel_alignment_device or "auto").lower() != "cpu":
+                    reference_t = canvas / torch.clamp(weights, min=1e-6)
+                    gpu_align = _ttp_find_pixel_alignment_offset_torch_canvas(
+                        region,
+                        reference_t,
+                        weights,
+                        out_x,
+                        out_y,
+                        coverage_mask,
+                        int(pixel_alignment_radius),
+                        str(pixel_alignment),
+                    )
+                    if gpu_align is not None:
+                        offset, align_info = gpu_align
+                        dx, dy = int(offset[0]), int(offset[1])
+                    else:
+                        reference = reference_t.detach().cpu().numpy()
+                        weights_np = weights.detach().cpu().numpy()
+                        dx, dy, align_info = _ttp_find_pixel_alignment_offset_auto(
+                            region,
+                            reference,
+                            weights_np,
+                            out_x,
+                            out_y,
+                            coverage_mask,
+                            int(pixel_alignment_radius),
+                            str(pixel_alignment),
+                            "cpu",
+                        )
+                        align_info = {**align_info, "fallback": True, "fallback_reason": "torch_canvas_failed"}
+                elif use_gpu_assemble:
+                    reference = (canvas / torch.clamp(weights, min=1e-6)).detach().cpu().numpy()
+                    weights_np = weights.detach().cpu().numpy()
+                    dx, dy, align_info = _ttp_find_pixel_alignment_offset_auto(
+                        region,
+                        reference,
+                        weights_np,
+                        out_x,
+                        out_y,
+                        coverage_mask,
+                        int(pixel_alignment_radius),
+                        str(pixel_alignment),
+                        "cpu",
+                    )
+                else:
+                    reference = canvas / np.maximum(weights, 1e-6)
+                    dx, dy, align_info = _ttp_find_pixel_alignment_offset_auto(
+                        region,
+                        reference,
+                        weights,
+                        out_x,
+                        out_y,
+                        coverage_mask,
+                        int(pixel_alignment_radius),
+                        str(pixel_alignment),
+                        str(pixel_alignment_device),
+                    )
                 align_device = str(align_info.get("device", "cpu"))
                 if align_device.startswith("cuda") or align_device.startswith("mps") or align_device not in ("cpu", "off"):
                     alignment_stats["gpu"] += 1
