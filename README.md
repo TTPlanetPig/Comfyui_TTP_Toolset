@@ -45,7 +45,7 @@ Current workflow nodes:
 - `TTP Smart Tile Loop Source`: outputs one tile at a time for sampler/img2img processing.
 - `TTP Smart Tile Loop Collect`: collects processed tiles back into the tile set.
 - `TTP Smart Tile Image Upscale Prep`: optionally upscales one tile before sampling.
-- `TTP Smart Tile Assemble`: assembles processed tiles back into the final image with feathered blending, mask support, priority/layer handling, color correction, and optional CPU/GPU pixel alignment.
+- `TTP Smart Tile Assemble`: assembles processed tiles back into the final image with feathered blending, mask support, priority/layer handling, color correction, optional CPU/GPU pixel alignment, and optional GPU paste/weight accumulation.
 - `TTP Smart Tile Save Final Image`: saves only the final loop result and embeds workflow metadata.
 
 Interactive loop workflow:
@@ -59,6 +59,8 @@ TTP Smart Tile Interactive Crop
   -> TTP Smart Tile Assemble
   -> TTP Smart Tile Save Final Image
 ```
+
+For faster loop previews, set `TTP Smart Tile Assemble` `assemble_mode` to `final_only` and connect `TTP Smart Tile Loop Collect.done` to `TTP Smart Tile Assemble.done`. While `done` is false, Assemble returns a lightweight preview instead of recompositing the whole image; after the last tile, it performs the full assemble once. `assemble_device` controls the paste/weight accumulation device (`auto`, `cpu`, or `gpu`). Official `Transfer Color` methods and PIL resize/crop handling remain on their existing paths for compatibility.
 
 `TTP Smart Tile Interactive Crop` is the recommended starting point when you want to manually or automatically split a still image by visual regions. Its `image` input follows the official `Load Image` pattern, so uploads go to ComfyUI's input folder and the workflow stores the selected filename instead of embedding the whole image. The editor can generate a standard grid from column/row numbers, replace the full layout with that grid, subdivide the currently selected tile, add painted-mask tiles, and fill uncovered gaps. It stores the tile layout in a hidden widget so the workflow keeps the current plan.
 

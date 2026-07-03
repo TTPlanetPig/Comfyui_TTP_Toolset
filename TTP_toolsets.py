@@ -891,10 +891,20 @@ def _ttp_alignment_torch_device(device_mode="auto"):
     device_mode = str(device_mode or "auto").lower()
     if device_mode == "cpu":
         return None
+    if not all(hasattr(torch, name) for name in ("as_tensor", "zeros", "full")):
+        return None
     try:
         device = comfy.model_management.get_torch_device()
     except Exception:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        try:
+            if hasattr(torch, "cuda") and torch.cuda.is_available():
+                device = torch.device("cuda")
+            elif hasattr(torch, "backends") and getattr(getattr(torch.backends, "mps", None), "is_available", lambda: False)():
+                device = torch.device("mps")
+            else:
+                return None
+        except Exception:
+            return None
     if getattr(device, "type", "cpu") == "cpu":
         return None
     return device
@@ -1394,6 +1404,20 @@ def _ttp_validate_tile_set(tile_set):
     return tile_images, tile_meta, tiles_info
 
 
+def _ttp_assemble_placeholder_output(tile_images=None, base_image=None, source_image=None):
+    preview = None
+    for candidate in (base_image, source_image):
+        if candidate is not None:
+            preview = _ttp_first_image_tensor(candidate)
+            break
+    if preview is None and tile_images:
+        preview = _ttp_first_image_tensor(tile_images[0])
+    if preview is None:
+        preview = pil2tensor(Image.new("RGB", (1, 1), "black"))
+    width, height = _ttp_image_tensor_size(preview)
+    return preview, pil2tensor(Image.new("RGB", (width, height), "black"))
+
+
 def _ttp_send_smart_tile_loop_event(task, done=False, message=""):
     if PromptServer is None or not isinstance(task, dict):
         return
@@ -1879,6 +1903,33 @@ def _ttp_apply_local_mean_std_color(region, reference, mask=None, strength=1.0):
     corrected = (source - source_mean) * (target_std / source_std) + target_mean
     corrected = np.clip(corrected, 0.0, 1.0)
     return np.clip(source * (1.0 - strength) + corrected * strength, 0.0, 1.0)
+
+
+def _ttp_apply_local_mean_std_color_torch(region, reference, mask=None, strength=1.0):
+    strength = float(np.clip(float(strength), 0.0, 1.0))
+    if strength <= 0:
+        return region
+    if region.shape != reference.shape or region.numel() == 0:
+        return region
+
+    if mask is None:
+        weights = torch.ones(region.shape[:2], dtype=region.dtype, device=region.device)
+    else:
+        weights = mask[:, :, 0] if getattr(mask, "ndim", 0) == 3 else mask
+        weights = torch.clamp(weights.to(dtype=region.dtype, device=region.device), 0.0, 1.0)
+    if float(weights.sum().detach().cpu().item()) < 16.0:
+        weights = torch.ones(region.shape[:2], dtype=region.dtype, device=region.device)
+
+    weights_3 = weights[:, :, None]
+    weight_sum = torch.clamp(weights.sum(), min=1e-6)
+    source_mean = (region * weights_3).sum(dim=(0, 1)) / weight_sum
+    target_mean = (reference * weights_3).sum(dim=(0, 1)) / weight_sum
+    source_var = (((region - source_mean) ** 2) * weights_3).sum(dim=(0, 1)) / weight_sum
+    target_var = (((reference - target_mean) ** 2) * weights_3).sum(dim=(0, 1)) / weight_sum
+    source_std = torch.sqrt(torch.clamp(source_var, min=1e-6))
+    target_std = torch.sqrt(torch.clamp(target_var, min=1e-6))
+    corrected = torch.clamp((region - source_mean) * (target_std / source_std) + target_mean, 0.0, 1.0)
+    return torch.clamp(region * (1.0 - strength) + corrected * strength, 0.0, 1.0)
 
 
 def _ttp_pad_image_to_size(image, target_width, target_height):
@@ -3388,6 +3439,8 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 "large_tile_area_threshold": ("FLOAT", {"default": 0.55, "min": 0.05, "max": 1.0, "step": 0.01}),
                 "min_tile_scale_ratio": ("FLOAT", {"default": 0.95, "min": 0.25, "max": 2.0, "step": 0.05}),
                 "context_tile_weight": ("FLOAT", {"default": 0.25, "min": 0.0, "max": 1.0, "step": 0.05}),
+                "assemble_device": (["auto", "cpu", "gpu"], {"default": "auto"}),
+                "assemble_mode": (["always", "final_only"], {"default": "always"}),
             },
             "optional": {
                 "sampled_tiles": ("IMAGE",),
@@ -3396,6 +3449,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 "base_image": ("IMAGE",),
                 "source_image": ("IMAGE",),
                 "color_reference_image": ("IMAGE",),
+                "done": ("BOOLEAN", {"forceInput": True}),
             }
         }
 
@@ -3421,12 +3475,15 @@ class TTP_Smart_Tile_Assemble_Experimental:
         large_tile_area_threshold=0.55,
         min_tile_scale_ratio=0.95,
         context_tile_weight=0.25,
+        assemble_device="auto",
+        assemble_mode="always",
         sampled_tiles=None,
         tile_meta=None,
         tile_set=None,
         base_image=None,
         source_image=None,
         color_reference_image=None,
+        done=None,
     ):
         tile_images = None
         if tile_set is not None:
@@ -3447,6 +3504,9 @@ class TTP_Smart_Tile_Assemble_Experimental:
             tile_images = [sampled_tiles[index] for index in range(int(sampled_tiles.shape[0]))]
         elif len(tile_images) != len(tiles_info):
             raise ValueError(f"tile_set images ({len(tile_images)}) do not match tile_meta tiles ({len(tiles_info)})")
+
+        if str(assemble_mode or "always") == "final_only" and done is not None and not bool(done):
+            return _ttp_assemble_placeholder_output(tile_images, base_image=base_image, source_image=source_image)
 
         original_width, original_height = tile_meta["original_size"]
         if output_scale <= 0:
@@ -3473,24 +3533,48 @@ class TTP_Smart_Tile_Assemble_Experimental:
         output_width = max(1, int(round(original_width * output_scale)))
         output_height = max(1, int(round(original_height * output_scale)))
 
+        assemble_device_mode = str(assemble_device or "auto").lower()
+        assemble_torch_device = _ttp_alignment_torch_device(assemble_device_mode)
+        assemble_fallback_reason = ""
+        if assemble_torch_device is not None and str(pixel_alignment) != "off":
+            assemble_fallback_reason = "pixel_alignment_requires_cpu_canvas"
+            assemble_torch_device = None
+        elif assemble_torch_device is None and assemble_device_mode == "gpu":
+            assemble_fallback_reason = "gpu_unavailable"
+        use_gpu_assemble = assemble_torch_device is not None
+
         base_source_image = base_image if base_image is not None else source_image
         if base_source_image is not None:
             base_pil = tensor2pil(base_source_image[0].unsqueeze(0)).convert("RGB")
             if base_pil.size != (output_width, output_height):
                 base_pil = base_pil.resize((output_width, output_height), Image.Resampling.LANCZOS)
-            canvas = np.array(base_pil).astype(np.float32) / 255.0
-            weights = np.ones((output_height, output_width, 1), dtype=np.float32)
+            base_array = np.array(base_pil).astype(np.float32) / 255.0
+            if use_gpu_assemble:
+                canvas = torch.as_tensor(base_array, dtype=torch.float32, device=assemble_torch_device)
+                weights = torch.ones((output_height, output_width, 1), dtype=torch.float32, device=assemble_torch_device)
+            else:
+                canvas = base_array
+                weights = np.ones((output_height, output_width, 1), dtype=np.float32)
         else:
-            canvas = np.zeros((output_height, output_width, 3), dtype=np.float32)
-            weights = np.zeros((output_height, output_width, 1), dtype=np.float32)
+            if use_gpu_assemble:
+                canvas = torch.zeros((output_height, output_width, 3), dtype=torch.float32, device=assemble_torch_device)
+                weights = torch.zeros((output_height, output_width, 1), dtype=torch.float32, device=assemble_torch_device)
+            else:
+                canvas = np.zeros((output_height, output_width, 3), dtype=np.float32)
+                weights = np.zeros((output_height, output_width, 1), dtype=np.float32)
 
-        priority_ranks = np.full((output_height, output_width, 1), -np.inf, dtype=np.float32)
         use_occlusion = any(
             float(tile.get("occlusion_priority", 0.0)) != 0.0 or int(tile.get("layer", 0)) != 0
             for tile in tiles_info
         )
-        if base_source_image is not None and use_occlusion:
-            priority_ranks[:, :, :] = 0.0
+        if use_gpu_assemble:
+            priority_ranks = torch.full((output_height, output_width, 1), -float("inf"), dtype=torch.float32, device=assemble_torch_device)
+            if base_source_image is not None and use_occlusion:
+                priority_ranks.fill_(0.0)
+        else:
+            priority_ranks = np.full((output_height, output_width, 1), -np.inf, dtype=np.float32)
+            if base_source_image is not None and use_occlusion:
+                priority_ranks[:, :, :] = 0.0
 
         color_reference_pil = None
         if color_reference_image is not None:
@@ -3659,8 +3743,39 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 if ref.size != (output_width, output_height):
                     ref = ref.resize((output_width, output_height), Image.Resampling.LANCZOS)
                 ref_region = np.array(ref.crop((paste_x, paste_y, x_end, y_end))).astype(np.float32) / 255.0
-                region = _ttp_apply_local_mean_std_color(region, ref_region, coverage_mask, float(color_strength))
-            if use_occlusion:
+                if use_gpu_assemble:
+                    region_t = torch.as_tensor(region, dtype=torch.float32, device=assemble_torch_device)
+                    ref_region_t = torch.as_tensor(ref_region, dtype=torch.float32, device=assemble_torch_device)
+                    coverage_t = torch.as_tensor(coverage_mask, dtype=torch.float32, device=assemble_torch_device)
+                    region_t = _ttp_apply_local_mean_std_color_torch(region_t, ref_region_t, coverage_t, float(color_strength))
+                    region = None
+                else:
+                    region = _ttp_apply_local_mean_std_color(region, ref_region, coverage_mask, float(color_strength))
+            if use_gpu_assemble:
+                if str(color_correction) != "local_mean_std":
+                    region_t = torch.as_tensor(region, dtype=torch.float32, device=assemble_torch_device)
+                    coverage_t = torch.as_tensor(coverage_mask, dtype=torch.float32, device=assemble_torch_device)
+                mask_t = torch.as_tensor(mask, dtype=torch.float32, device=assemble_torch_device)
+                if use_occlusion:
+                    rank = rank_occlusion * 1000000.0 + rank_layer * 10000.0 + (rank_priority if use_priority else 0.0)
+                    rank_view = priority_ranks[paste_y:y_end, paste_x:x_end]
+                    mask_active = coverage_t > 1e-6
+                    higher = (rank > rank_view + 1e-6) & mask_active
+                    eligible = (rank >= rank_view - 1e-6) & mask_active
+                    canvas_view = canvas[paste_y:y_end, paste_x:x_end]
+                    weights_view = weights[paste_y:y_end, paste_x:x_end]
+                    higher_alpha = coverage_t * higher.to(dtype=torch.float32)
+                    keep = 1.0 - higher_alpha
+                    canvas_view.mul_(keep)
+                    weights_view.mul_(keep)
+                    rank_view[higher] = rank
+                    eligible_f = eligible.to(dtype=torch.float32)
+                    canvas_view.add_(region_t * mask_t * eligible_f)
+                    weights_view.add_(mask_t * eligible_f)
+                else:
+                    canvas[paste_y:y_end, paste_x:x_end].add_(region_t * mask_t)
+                    weights[paste_y:y_end, paste_x:x_end].add_(mask_t)
+            elif use_occlusion:
                 rank = rank_occlusion * 1000000.0 + rank_layer * 10000.0 + (rank_priority if use_priority else 0.0)
                 rank_view = priority_ranks[paste_y:y_end, paste_x:x_end]
                 mask_active = coverage_mask > 1e-6
@@ -3690,6 +3805,22 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 f"radius={int(pixel_alignment_radius)} max_samples={alignment_stats['samples']} "
                 f"candidates={alignment_stats['candidates']} devices={devices}"
             )
+
+        actual_assemble_device = str(assemble_torch_device) if use_gpu_assemble else "cpu"
+        if assemble_device_mode != "cpu" or assemble_fallback_reason:
+            print(
+                "[TTP Smart Tile] assemble paste "
+                f"requested_device={assemble_device_mode} actual_device={actual_assemble_device} "
+                f"mode={assemble_mode} tiles={len(tiles_info)} "
+                f"fallback={assemble_fallback_reason or 'none'}"
+            )
+
+        if use_gpu_assemble:
+            safe_weights = torch.clamp(weights, min=1e-6)
+            output = torch.clamp(canvas / safe_weights, 0.0, 1.0).detach().cpu()
+            max_weight = torch.clamp(weights.max(), min=1e-6)
+            weight_preview = torch.clamp(weights / max_weight, 0.0, 1.0).repeat(1, 1, 3).detach().cpu()
+            return (output.unsqueeze(0), weight_preview.unsqueeze(0))
 
         safe_weights = np.maximum(weights, 1e-6)
         output = canvas / safe_weights

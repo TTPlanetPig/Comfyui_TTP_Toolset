@@ -151,6 +151,9 @@ assert_equal("mask_blend_mode" in assemble_inputs["required"], True, "assemble s
 assert_equal("pixel_alignment" in assemble_inputs["required"], True, "assemble should expose pixel alignment")
 assert_equal("pixel_alignment_radius" in assemble_inputs["required"], True, "assemble should expose pixel alignment radius")
 assert_equal(assemble_inputs["required"]["pixel_alignment_device"][0], ["auto", "cpu", "gpu"], "assemble should expose CPU/GPU pixel alignment selection")
+assert_equal(assemble_inputs["required"]["assemble_device"][0], ["auto", "cpu", "gpu"], "assemble should expose CPU/GPU paste selection")
+assert_equal(assemble_inputs["required"]["assemble_mode"][0], ["always", "final_only"], "assemble should expose final-only mode")
+assert_equal(assemble_inputs["optional"]["done"][0], "BOOLEAN", "assemble should accept loop done gate")
 preview_inputs = ttp.TTP_Smart_Tile_Set_Preview_Experimental.INPUT_TYPES()
 assert_equal(preview_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "tile set preview should accept Smart Tile Set")
 assert_equal(
@@ -911,6 +914,19 @@ color_matched, _color_weights = assemble_node.assemble_tiles(
 )
 matched_pixel = color_matched.array[0, 4, 4]
 assert_equal(float(matched_pixel[0]) > float(matched_pixel[2]), True, "local mean/std color correction should match tile color toward the local reference")
+
+deferred_output, deferred_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    assemble_mode="final_only",
+    done=False,
+    tile_set=blue_tile_set,
+    base_image=red_reference,
+)
+deferred_pixel = deferred_output.array[0, 4, 4]
+assert_equal(float(deferred_pixel[0]) > float(deferred_pixel[2]), True, "final-only assemble should return the base preview before loop completion")
+assert_equal(float(deferred_weights.array.max()), 0.0, "final-only assemble should skip weight drawing before loop completion")
 
 base_scale_meta = {
     "type": "ttp_smart_tile",
