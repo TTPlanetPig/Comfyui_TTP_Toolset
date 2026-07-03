@@ -1,4 +1,6 @@
 import json
+import base64
+from io import BytesIO
 from pathlib import Path
 import sys
 import types
@@ -100,9 +102,11 @@ assert_equal("auto_prompt" in required_inputs, True, "interactive crop should ex
 assert_equal("allow_object_overlap" in required_inputs, True, "interactive crop should expose object overlap control")
 assert_equal("auto_object_padding" in required_inputs, True, "interactive crop should expose object padding control")
 assert_equal("auto_max_tiles" in required_inputs, True, "interactive crop should expose auto max tiles control")
+assert_equal("auto_paint_mask" in required_inputs, True, "interactive crop should expose hidden painted mask input")
 assert_equal("vision_model" in optional_inputs, True, "interactive crop should expose a vision model input")
 assert_equal("vision_conditioning" in optional_inputs, True, "interactive crop should expose official SAM3 conditioning input")
 assert_equal("clip" in optional_inputs, True, "interactive crop should optionally encode SAM3 prompts with CLIP")
+assert_equal("qwen_vl_model" in optional_inputs, True, "interactive crop should accept local QwenVL model for bbox auto tile")
 assert_equal(hidden_inputs["unique_id"], "UNIQUE_ID", "interactive crop should receive its ComfyUI node id")
 
 assemble_inputs = ttp.TTP_Smart_Tile_Assemble_Experimental.INPUT_TYPES()
@@ -123,10 +127,31 @@ assert_equal(
     "tile set preview should be registered",
 )
 prompt_builder_inputs = ttp.TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental.INPUT_TYPES()
-assert_equal(prompt_builder_inputs["required"]["reference_image_mode"][0], ["none", "first_message", "every_tile"], "prompt builder should support both reference image strategies")
-assert_equal(prompt_builder_inputs["required"]["mode"][0], ["template", "qwen_vl_api", "qwen_vl_local"], "prompt builder should expose template, API, and local QwenVL modes")
-assert_equal("seed" in prompt_builder_inputs["required"], False, "prompt builder seed should not disturb existing required widget order")
-assert_equal(prompt_builder_inputs["optional"]["seed"][0], "INT", "prompt builder should expose an optional seed for local QwenVL sampling")
+assert_equal("tile_set" in prompt_builder_inputs["required"], False, "prompt builder should not put forceInput tile_set before visible widgets")
+assert_equal(prompt_builder_inputs["optional"]["tile_set"][1].get("forceInput"), True, "prompt builder tile_set should be an optional forceInput connection")
+assert_equal(prompt_builder_inputs["required"]["reference_image_mode"][0], ["none", "first_message", "every_tile", "contact_sheet"], "prompt builder should support reference image and contact sheet strategies")
+assert_equal("mode" in prompt_builder_inputs["required"], False, "prompt builder should auto-select template or local QwenVL mode from the model input")
+assert_equal("prompt_preset" in prompt_builder_inputs["required"], True, "prompt builder should expose preset prompt selection")
+assert_equal("qwen_max_side" in prompt_builder_inputs["required"], True, "prompt builder should expose Qwen image resize control")
+assert_equal("use_tile_cache" in prompt_builder_inputs["required"], True, "prompt builder should expose tile-level cache control")
+assert_equal("endpoint_url" in prompt_builder_inputs["required"], False, "prompt builder should not expose API endpoint fields")
+assert_equal("model_name" in prompt_builder_inputs["required"], False, "prompt builder should use the connected local QwenVL model instead of a model-name widget")
+prompt_required_order = list(prompt_builder_inputs["required"].keys())
+assert_equal(
+    prompt_required_order.index("prompt_preset") > prompt_required_order.index("temperature"),
+    True,
+    "new prompt builder widgets should be appended after legacy prompt fields to avoid saved-widget value shifts",
+)
+assert_equal(
+    prompt_required_order.index("global_negative") > prompt_required_order.index("use_tile_cache"),
+    True,
+    "global negative should stay at the end to avoid shifting core prompt widgets",
+)
+assert_equal(prompt_builder_inputs["required"]["system_prompt"][1]["dynamicPrompts"], False, "system prompt should not use ComfyUI dynamic prompt parsing")
+assert_equal(prompt_builder_inputs["required"]["tile_instruction"][1]["dynamicPrompts"], False, "tile instruction should not use ComfyUI dynamic prompt parsing")
+assert_equal("seed" in prompt_builder_inputs["required"], False, "prompt builder should avoid ComfyUI's special seed widget name")
+assert_equal("seed" in prompt_builder_inputs["optional"], False, "prompt builder should not expose the legacy seed widget name")
+assert_equal(prompt_builder_inputs["required"]["qwen_seed"][0], "INT", "prompt builder should expose qwen_seed for local QwenVL sampling")
 assert_equal(prompt_builder_inputs["optional"]["qwen_vl_model"][0], "TTP_QWENVL3_MODEL", "prompt builder should accept local QwenVL loader output")
 qwen_loader_inputs = ttp.TTP_QwenVL3_Local_Loader_Experimental.INPUT_TYPES()
 assert_equal("model_file" in qwen_loader_inputs["required"], True, "QwenVL local loader should expose a safetensors file picker")
@@ -338,12 +363,33 @@ assert_equal("masterpiece" in prompt_tile_set["tile_meta"]["tiles"][0]["prompt"]
 assert_equal(prompt_tile_set["tile_meta"]["tiles"][0]["negative"], "blurry", "prompt builder should write tile negative prompts")
 assert_equal("0:" in prompt_summary, True, "prompt builder should summarize prompts")
 
+shifted_tile_set, shifted_prompt_json, _shifted_summary = prompt_builder.build_prompt_set(
+    tile_set,
+    mode="template",
+    reference_image_mode="every_tile",
+    system_prompt="tile_json_strict",
+    tile_instruction="custom system",
+    global_prompt="custom tile instruction",
+    global_negative="masterpiece",
+    prompt_merge_mode="blurry",
+    output_language="global_plus_caption",
+    max_new_tokens="chinese",
+    temperature=768,
+    prompt_preset=0.2,
+)
+shifted_prompt_data = json.loads(shifted_prompt_json)
+assert_equal(shifted_prompt_data["prompt_preset"], "tile_json_strict", "prompt builder should recover preset from shifted widget values")
+assert_equal(shifted_prompt_data["tiles"][0]["negative"], "blurry", "prompt builder should recover global negative from shifted widget values")
+assert_equal("masterpiece" in shifted_tile_set["tile_meta"]["tiles"][0]["prompt"], True, "prompt builder should recover global prompt from shifted widget values")
+
 class FakeQwenClip:
     last_seed = None
     last_text = ""
+    last_kwargs = {}
 
     def tokenize(self, text, **kwargs):
         self.last_text = text
+        self.last_kwargs = kwargs
         return {"text": text, **kwargs}
 
     def generate(self, tokens, **kwargs):
@@ -365,7 +411,7 @@ qwen_tile_set, qwen_prompt_json, qwen_summary = prompt_builder.build_prompt_set(
     reference_image_mode="every_tile",
     global_prompt="masterpiece",
     global_negative="blurry",
-    seed=1234,
+    qwen_seed=1234,
     qwen_vl_model={
         "type": "ttp_qwenvl3_model",
         "model_file": "fake_qwen_vl.safetensors",
@@ -374,11 +420,65 @@ qwen_tile_set, qwen_prompt_json, qwen_summary = prompt_builder.build_prompt_set(
 )
 qwen_prompt_data = json.loads(qwen_prompt_json)
 assert_equal(qwen_prompt_data["mode"], "qwen_vl_local", "connected local QwenVL model should override template fallback")
-assert_equal(qwen_prompt_data["seed"], 1234, "QwenVL prompt set JSON should record the local sampling seed")
+assert_equal(qwen_prompt_data["model_file"], "fake_qwen_vl.safetensors", "QwenVL prompt set JSON should record the connected local model file")
+assert_equal(qwen_prompt_data["qwen_seed"], 1234, "QwenVL prompt set JSON should record the local sampling seed")
+assert_equal(qwen_prompt_data["prompt_preset"], "tile_img2img_prompt", "QwenVL prompt set JSON should record the prompt preset")
 assert_equal("mode=qwen_vl_local" in qwen_summary, True, "QwenVL summary should report the effective mode")
 assert_equal(qwen_tile_set["tile_meta"]["tiles"][0]["prompt"], "qwen detailed tile 0 prompt", "QwenVL prompt should come from model output")
 assert_equal(qwen_tile_set["tile_meta"]["tiles"][1]["prompt"], "qwen detailed tile 1 prompt", "QwenVL should write a distinct prompt per tile")
+assert_equal(qwen_tile_set["tile_meta"]["tiles"][0]["qwen_cache"], "miss", "first QwenVL prompt build should miss tile cache")
 assert_equal(fake_qwen_clip.last_seed, 1234, "local QwenVL generate should receive an integer seed")
+assert_equal("llama_template" in fake_qwen_clip.last_kwargs, False, "local QwenVL should use ComfyUI native Qwen image chat template")
+assert_equal("images" in fake_qwen_clip.last_kwargs, True, "local QwenVL should pass images through the native tokenizer path")
+
+cached_qwen_tile_set, _cached_qwen_prompt_json, _cached_qwen_summary = prompt_builder.build_prompt_set(
+    tile_set,
+    mode="qwen_vl_local",
+    reference_image_mode="every_tile",
+    prompt_preset="tile_img2img_prompt",
+    global_prompt="masterpiece",
+    global_negative="blurry",
+    qwen_seed=1234,
+    qwen_vl_model={
+        "type": "ttp_qwenvl3_model",
+        "model_file": "fake_qwen_vl.safetensors",
+        "clip": fake_qwen_clip,
+    },
+)
+assert_equal(cached_qwen_tile_set["tile_meta"]["tiles"][0]["qwen_cache"], "hit", "repeated QwenVL prompt build should hit tile cache")
+
+legacy_seed_clip = FakeQwenClip()
+_legacy_seed_tile_set, legacy_seed_prompt_json, _legacy_seed_summary = prompt_builder.build_prompt_set(
+    tile_set,
+    mode="qwen_vl_local",
+    seed=5678,
+    qwen_vl_model={
+        "type": "ttp_qwenvl3_model",
+        "model_file": "fake_legacy_seed_qwen_vl.safetensors",
+        "clip": legacy_seed_clip,
+    },
+)
+legacy_seed_prompt_data = json.loads(legacy_seed_prompt_json)
+assert_equal(legacy_seed_prompt_data["qwen_seed"], 5678, "legacy seed kwargs should map to qwen_seed")
+assert_equal(legacy_seed_clip.last_seed, 5678, "legacy seed kwargs should still reach local QwenVL generate")
+
+small_qwen_clip = FakeQwenClip()
+small_qwen_tile_set, _small_qwen_prompt_json, _small_qwen_summary = prompt_builder.build_prompt_set(
+    tile_set,
+    mode="qwen_vl_local",
+    reference_image_mode="contact_sheet",
+    prompt_preset="tile_json_strict",
+    qwen_max_side=96,
+    qwen_max_pixels=0,
+    use_tile_cache=False,
+    qwen_vl_model={
+        "type": "ttp_qwenvl3_model",
+        "model_file": "fake_small_qwen_vl.safetensors",
+        "clip": small_qwen_clip,
+    },
+)
+small_size = small_qwen_tile_set["tile_meta"]["tiles"][0]["qwen_input_size"]
+assert_equal(max(small_size) <= 96, True, "QwenVL prompt builder should resize tile inputs for inference")
 
 miswired_qwen_clip = FakeQwenClip()
 miswired_tile_set, miswired_prompt_json, _miswired_summary = prompt_builder.build_prompt_set(
@@ -393,6 +493,29 @@ miswired_tile_set, miswired_prompt_json, _miswired_summary = prompt_builder.buil
 miswired_prompt_data = json.loads(miswired_prompt_json)
 assert_equal(miswired_prompt_data["mode"], "qwen_vl_local", "miswired QwenVL model in reference_image should be recovered")
 assert_equal(miswired_tile_set["tile_meta"]["tiles"][0]["prompt"], "qwen detailed tile 0 prompt", "recovered QwenVL model should still generate prompts")
+
+class FakeQwenRetryClip(FakeQwenClip):
+    attempts = 0
+
+    def decode(self, output_ids, skip_special_tokens=True):
+        self.attempts += 1
+        if "Return compact JSON only" in self.last_text:
+            return '{"label":"retry tile","caption":"Recovered concise tile facts.","prompt":"recovered concise tile prompt","negative":"retry negative"}'
+        return "This response keeps describing the tile without JSON until it reaches the token limit."
+
+
+retry_qwen_clip = FakeQwenRetryClip()
+retry_tile_set, _retry_prompt_json, _retry_summary = prompt_builder.build_prompt_set(
+    tile_set,
+    mode="qwen_vl_local",
+    qwen_vl_model={
+        "type": "ttp_qwenvl3_model",
+        "model_file": "fake_retry_qwen_vl.safetensors",
+        "clip": retry_qwen_clip,
+    },
+)
+assert_equal(retry_tile_set["tile_meta"]["tiles"][0]["prompt"], "recovered concise tile prompt", "QwenVL prompt builder should retry with compact JSON-only prompt")
+assert_equal("qwen_raw_retry" in retry_tile_set["tile_meta"]["tiles"][0], True, "QwenVL retry raw output should be stored for debugging")
 
 class FakeQwenEchoClip(FakeQwenClip):
     def decode(self, output_ids, skip_special_tokens=True):
@@ -411,7 +534,21 @@ try:
     )
     raise AssertionError("QwenVL instruction echo should not be accepted as a tile prompt")
 except RuntimeError as exc:
-    assert_equal("did not return JSON" in str(exc), True, "QwenVL instruction echo should fail with a clear JSON error")
+    assert_equal("did not return JSON fields" in str(exc), True, "QwenVL instruction echo should fail with a clear JSON error")
+
+partial_qwen = '{ "label": "object_5", "caption": "close-up portrait with warm light", "prompt": "close-up portrait with warm'
+partial_record = ttp._ttp_parse_qwen_tile_record(partial_qwen, 5)
+assert_equal(partial_record["label"], "object_5", "partial Qwen JSON should preserve label")
+assert_equal(partial_record["caption"], "close-up portrait with warm light", "partial Qwen JSON should preserve completed caption")
+assert_equal(partial_record["prompt"], "close-up portrait with warm", "partial Qwen JSON should salvage truncated prompt text")
+messy_qwen = 'assistant:\n<think>hidden reasoning</think>```json\n{"label":"face","caption":"sharp eyes","prompt":"detailed face","negative":""}\n```'
+messy_record = ttp._ttp_parse_qwen_tile_record(messy_qwen, 0)
+assert_equal(messy_record["label"], "face", "Qwen cleaner should remove assistant prefixes, markdown fences, and thinking blocks")
+
+bbox_items = ttp._ttp_qwen_bbox_items('```json\n[{"label":"face","bbox":[300,200,500,450],"score":0.9}]\n```', 1000, 800)
+assert_equal(len(bbox_items), 1, "Qwen bbox parser should read JSON list outputs")
+assert_equal(bbox_items[0]["label"], "face", "Qwen bbox parser should preserve labels")
+assert_equal(round(bbox_items[0]["x"]), 300, "Qwen bbox parser should convert normalized x coordinates")
 
 loop_source = ttp.TTP_Smart_Tile_Loop_Source_Experimental()
 loop_collect = ttp.TTP_Smart_Tile_Loop_Collect_Experimental()
@@ -612,6 +749,26 @@ assert_equal(object_tile["label"], "person", "auto layout should preserve labels
 assert_equal(object_tile["layer"], 2, "auto object tile should be above background")
 assert_equal(object_tile["occlusion_priority"] > auto_meta[0]["occlusion_priority"], True, "object tile should outrank background")
 
+detail_layout = ttp._ttp_boxes_to_auto_layout(
+    [
+        {"x": 220, "y": 80, "width": 300, "height": 440, "label": "person", "score": 0.95},
+        {"x": 315, "y": 120, "width": 92, "height": 86, "label": "face", "score": 0.88},
+    ],
+    900,
+    600,
+    default_pad=64,
+    default_blend=32,
+    object_padding=24,
+    max_tiles=4,
+    include_background=True,
+    allow_object_overlap=True,
+)
+detail_meta = ttp._ttp_parse_smart_tile_layout(detail_layout, 900, 600)
+person_tile = next(tile for tile in detail_meta if tile.get("label") == "person")
+face_tile = next(tile for tile in detail_meta if tile.get("label") == "face")
+assert_equal(face_tile["layer"] > person_tile["layer"], True, "face/detail auto tile should sit above generic object tile")
+assert_equal(face_tile["occlusion_priority"] > person_tile["occlusion_priority"], True, "face/detail auto tile should outrank generic object tile")
+
 mask_image = Image.new("L", (900, 600), 0)
 for x in range(260, 420):
     for y in range(140, 360):
@@ -633,6 +790,38 @@ assert_equal("object_mask" in masked_auto_meta[0], True, "auto layout should pre
 mask_array = ttp._ttp_tile_object_mask_array(masked_auto_meta[0], masked_auto_meta[0]["sample_box"][2], masked_auto_meta[0]["sample_box"][3], "mask_feather", 32)
 assert_equal(mask_array.shape[2], 1, "decoded object mask should be a single-channel weight map")
 assert_equal(float(mask_array.max()) > 0.5, True, "decoded object mask should keep foreground weight")
+
+paint_mask = Image.new("L", (64, 48), 0)
+for x in range(8, 22):
+    for y in range(6, 20):
+        paint_mask.putpixel((x, y), 255)
+for x in range(42, 56):
+    for y in range(28, 42):
+        paint_mask.putpixel((x, y), 255)
+paint_buffer = BytesIO()
+paint_mask.save(paint_buffer, format="PNG")
+paint_payload = json.dumps({
+    "format": "png_base64",
+    "width": 64,
+    "height": 48,
+    "data": base64.b64encode(paint_buffer.getvalue()).decode("ascii"),
+})
+decoded_paint = ttp._ttp_decode_interactive_paint_mask(paint_payload, 64, 48)
+paint_items, paint_masks = ttp._ttp_paint_mask_to_items(decoded_paint, 64, 48)
+assert_equal(len(paint_items), 2, "paint mask should become one bbox per painted island")
+paint_layout, paint_message = ttp._ttp_run_paint_mask_auto_layout(
+    Image.new("RGB", (64, 48), "black"),
+    paint_payload,
+    default_pad=8,
+    default_blend=4,
+    object_padding=2,
+    max_tiles=8,
+    allow_object_overlap=True,
+)
+paint_meta = ttp._ttp_parse_smart_tile_layout(paint_layout, 64, 48)
+assert_equal(len(paint_meta), 2, "paint-only auto tile should create tiles from painted regions")
+assert_equal(all(tile.get("object_mask") for tile in paint_meta), True, "paint-created tiles should carry object masks")
+assert_equal("paint mask" in paint_message.lower(), True, "paint-only auto tile should report paint mask inference")
 
 half_mask = Image.new("L", (8, 8), 128)
 half_mask_data = ttp._ttp_encode_object_mask_data([half_mask], [0], [0, 0, 8, 8])
@@ -690,6 +879,60 @@ color_matched, _color_weights = assemble_node.assemble_tiles(
 )
 matched_pixel = color_matched.array[0, 4, 4]
 assert_equal(float(matched_pixel[0]) > float(matched_pixel[2]), True, "local mean/std color correction should match tile color toward the local reference")
+
+base_scale_meta = {
+    "type": "ttp_smart_tile",
+    "original_size": [8, 8],
+    "tiles": [{
+        "name": "large_context",
+        "label": "large context tile",
+        "core_box": [0, 0, 8, 8],
+        "sample_box": [0, 0, 8, 8],
+        "tile_canvas_size": [8, 8],
+        "tile_canvas_box": [0, 0, 8, 8],
+        "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+        "blend": 0,
+        "importance": 1.0,
+        "priority": 100.0,
+        "layer": 2,
+        "occlusion_priority": 100,
+    }],
+}
+base_canvas = ttp.pil2tensor(Image.new("RGB", (16, 16), (200, 20, 20)))
+low_res_context = {
+    "type": "ttp_smart_tile_set",
+    "tile_meta": base_scale_meta,
+    "tile_images": [ttp.pil2tensor(Image.new("RGB", (8, 8), (20, 20, 220)))[0]],
+}
+kept_base, _kept_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=0.0,
+    use_priority=True,
+    tile_set=low_res_context,
+    base_image=base_canvas,
+    large_tile_policy="use_if_higher_resolution",
+    context_tile_weight=0.0,
+)
+assert_equal(list(kept_base.shape), [1, 16, 16, 3], "base_image should set the inferred assemble output size")
+kept_pixel = kept_base.array[0, 8, 8]
+assert_equal(float(kept_pixel[0]) > 0.75 and float(kept_pixel[2]) < 0.1, True, "low-resolution large tiles should not replace a higher-resolution base canvas")
+
+high_res_context = {
+    "type": "ttp_smart_tile_set",
+    "tile_meta": base_scale_meta,
+    "tile_images": [ttp.pil2tensor(Image.new("RGB", (16, 16), (20, 20, 220)))[0]],
+}
+used_high_res, _used_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=0.0,
+    use_priority=True,
+    tile_set=high_res_context,
+    base_image=base_canvas,
+    large_tile_policy="use_if_higher_resolution",
+    context_tile_weight=0.0,
+)
+used_pixel = used_high_res.array[0, 8, 8]
+assert_equal(float(used_pixel[2]) > 0.75 and float(used_pixel[0]) < 0.1, True, "higher-resolution large tiles should be allowed to replace the base canvas")
 
 reference = np.zeros((16, 16, 3), dtype=np.float32)
 for y in range(16):

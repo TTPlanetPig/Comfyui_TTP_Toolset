@@ -215,6 +215,194 @@ function layoutDefaults(node) {
     };
 }
 
+function ensurePaintMaskCanvas(node) {
+    const size = imageSourceSize(node);
+    if (!size) {
+        return null;
+    }
+    const width = Math.max(1, Math.round(size.width));
+    const height = Math.max(1, Math.round(size.height));
+    let canvas = node.ttpSmartTilePaintCanvas;
+    if (!canvas || canvas.width !== width || canvas.height !== height) {
+        canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        node.ttpSmartTilePaintCanvas = canvas;
+        const widget = widgetByName(node, "auto_paint_mask");
+        if (widget) {
+            widget.value = "";
+        }
+    }
+    return canvas;
+}
+
+function paintMaskHasPixels(canvas) {
+    if (!canvas) {
+        return false;
+    }
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) {
+        return false;
+    }
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let index = 3; index < data.length; index += 4) {
+        if (data[index] > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function syncPaintMaskWidget(node) {
+    const widget = widgetByName(node, "auto_paint_mask");
+    if (!widget) {
+        return;
+    }
+    const canvas = ensurePaintMaskCanvas(node);
+    if (!paintMaskHasPixels(canvas)) {
+        widget.value = "";
+        return;
+    }
+    widget.value = JSON.stringify({
+        format: "png_base64",
+        width: canvas.width,
+        height: canvas.height,
+        data: canvas.toDataURL("image/png").split(",", 2)[1],
+    });
+}
+
+function clearPaintMask(node) {
+    const canvas = ensurePaintMaskCanvas(node);
+    if (canvas) {
+        canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    syncPaintMaskWidget(node);
+}
+
+function paintMaskComponents(canvas, minArea = 24) {
+    const context = canvas?.getContext("2d", { willReadFrequently: true });
+    if (!canvas || !context) {
+        return [];
+    }
+    const { width, height } = canvas;
+    const data = context.getImageData(0, 0, width, height).data;
+    const visited = new Uint8Array(width * height);
+    const components = [];
+    const isPainted = (x, y) => data[(y * width + x) * 4 + 3] > 8;
+    for (let startY = 0; startY < height; startY += 1) {
+        for (let startX = 0; startX < width; startX += 1) {
+            const startIndex = startY * width + startX;
+            if (visited[startIndex] || !isPainted(startX, startY)) {
+                visited[startIndex] = 1;
+                continue;
+            }
+            const stack = [[startX, startY]];
+            visited[startIndex] = 1;
+            let x0 = startX;
+            let y0 = startY;
+            let x1 = startX + 1;
+            let y1 = startY + 1;
+            let area = 0;
+            while (stack.length) {
+                const [x, y] = stack.pop();
+                area += 1;
+                x0 = Math.min(x0, x);
+                y0 = Math.min(y0, y);
+                x1 = Math.max(x1, x + 1);
+                y1 = Math.max(y1, y + 1);
+                for (let nextY = Math.max(0, y - 1); nextY <= Math.min(height - 1, y + 1); nextY += 1) {
+                    for (let nextX = Math.max(0, x - 1); nextX <= Math.min(width - 1, x + 1); nextX += 1) {
+                        const nextIndex = nextY * width + nextX;
+                        if (!visited[nextIndex]) {
+                            visited[nextIndex] = 1;
+                            if (isPainted(nextX, nextY)) {
+                                stack.push([nextX, nextY]);
+                            }
+                        }
+                    }
+                }
+            }
+            if (area >= minArea) {
+                components.push({ x0, y0, x1, y1, area });
+            }
+        }
+    }
+    return components;
+}
+
+function maskCropData(canvas, box) {
+    const width = Math.max(1, Math.round(box.x1 - box.x0));
+    const height = Math.max(1, Math.round(box.y1 - box.y0));
+    const crop = document.createElement("canvas");
+    crop.width = width;
+    crop.height = height;
+    const context = crop.getContext("2d");
+    context.drawImage(canvas, box.x0, box.y0, width, height, 0, 0, width, height);
+    return crop.toDataURL("image/png").split(",", 2)[1];
+}
+
+function addPaintMaskTiles(node, tiles, selectedIndex) {
+    const canvas = ensurePaintMaskCanvas(node);
+    const size = imageSourceSize(node);
+    if (!canvas || !size || !paintMaskHasPixels(canvas)) {
+        node.ttpSmartTileStatus = "Paint a mask first.";
+        return false;
+    }
+    const components = paintMaskComponents(canvas);
+    if (!components.length) {
+        node.ttpSmartTileStatus = "Paint mask is too small.";
+        return false;
+    }
+    const padding = Math.max(0, Math.round(Number(widgetByName(node, "auto_object_padding")?.value ?? 96)));
+    const defaults = layoutDefaults(node);
+    const nextTiles = [...tiles];
+    let added = 0;
+    for (const component of components) {
+        if (nextTiles.length >= MAX_TILES) {
+            break;
+        }
+        const box = {
+            x0: Math.max(0, component.x0 - padding),
+            y0: Math.max(0, component.y0 - padding),
+            x1: Math.min(canvas.width, component.x1 + padding),
+            y1: Math.min(canvas.height, component.y1 + padding),
+        };
+        const width = Math.max(1, box.x1 - box.x0);
+        const height = Math.max(1, box.y1 - box.y0);
+        nextTiles.push(normalizeTile(node, {
+            x0: box.x0 / canvas.width,
+            y0: box.y0 / canvas.height,
+            x1: box.x1 / canvas.width,
+            y1: box.y1 / canvas.height,
+            source: "paint_mask",
+            label: `paint mask ${added + 1}`,
+            pad: defaults.pad,
+            blend: defaults.blend,
+            priority: 140,
+            importance: 1.0,
+            layer: 5,
+            occlusion_priority: 3200 + nextTiles.length,
+            object_mask: {
+                format: "png_base64",
+                box: [Math.round(box.x0), Math.round(box.y0), Math.round(width), Math.round(height)],
+                width: Math.round(width),
+                height: Math.round(height),
+                data: maskCropData(canvas, box),
+            },
+        }));
+        added += 1;
+    }
+    if (!added) {
+        node.ttpSmartTileStatus = `Mask has ${components.length} region(s), but max ${MAX_TILES} tiles is reached.`;
+        return false;
+    }
+    writeLayout(node, nextTiles, Math.min(nextTiles.length - 1, Math.max(0, selectedIndex + added)));
+    clearPaintMask(node);
+    node.ttpSmartTilePaintMode = "off";
+    node.ttpSmartTileStatus = `Mask to Tile added ${added} tile(s).`;
+    return true;
+}
+
 function writeLayout(node, tiles, selectedIndex = 0) {
     const normalizedTiles = (Array.isArray(tiles) && tiles.length ? tiles : defaultTiles(node))
         .slice(0, MAX_TILES)
@@ -484,6 +672,9 @@ async function inferSmartTileLayout(node) {
     try {
         await app.queuePrompt(0);
     } catch (error) {
+        if (requestWidget) {
+            requestWidget.value = 0;
+        }
         node.ttpSmartTileStatus = error?.message || "Could not queue inference.";
         renderEditor(node);
     }
@@ -496,6 +687,10 @@ function applyInferenceResult(detail) {
     const node = app.graph.getNodeById?.(Number(detail.node_id)) ?? app.graph._nodes_by_id?.[detail.node_id];
     if (!node || (node.comfyClass ?? node.type) !== NODE_NAME) {
         return;
+    }
+    const requestWidget = widgetByName(node, "auto_detect_request");
+    if (requestWidget) {
+        requestWidget.value = 0;
     }
     const statusParts = [];
     if (detail.message) {
@@ -540,6 +735,68 @@ function setLoopSourceStatus(node, status) {
         widget.value = status;
     }
     scheduleCanvas(node);
+}
+
+function drawRoundedRect(ctx, x, y, width, height, radius) {
+    if (ctx.roundRect) {
+        ctx.roundRect(x, y, width, height, radius);
+        return;
+    }
+    const r = Math.min(radius, width / 2, height / 2);
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + width - r, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+    ctx.lineTo(x + width, y + height - r);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+    ctx.lineTo(x + r, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+}
+
+function highlightLoopStartButton(node) {
+    const widget = widgetByName(node, "process_all_tiles");
+    if (!widget || widget.ttpSmartTileHighlighted) {
+        return;
+    }
+    widget.value = "Start Loop / Process All Tiles";
+    widget.computeSize = (width) => [Math.max(300, Number(width) || 300), 48];
+    widget.draw = function (ctx, _node, widgetWidth, y, widgetHeight) {
+        const width = Math.max(260, Number(widgetWidth) || 300);
+        const height = Math.max(42, Number(widgetHeight) || 48);
+        const x = 12;
+        const buttonWidth = Math.max(180, width - 24);
+        const buttonHeight = height - 8;
+        const buttonY = y + 4;
+        ctx.save();
+        ctx.beginPath();
+        drawRoundedRect(ctx, x, buttonY, buttonWidth, buttonHeight, 7);
+        const gradient = ctx.createLinearGradient(x, buttonY, x + buttonWidth, buttonY + buttonHeight);
+        gradient.addColorStop(0, "#38bdf8");
+        gradient.addColorStop(1, "#2563eb");
+        ctx.fillStyle = gradient;
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = "#bae6fd";
+        ctx.stroke();
+        ctx.shadowColor = "rgba(56,189,248,.45)";
+        ctx.shadowBlur = 9;
+        ctx.beginPath();
+        drawRoundedRect(ctx, x + 1, buttonY + 1, buttonWidth - 2, buttonHeight - 2, 6);
+        ctx.strokeStyle = "rgba(255,255,255,.35)";
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = "#f8fafc";
+        ctx.font = "bold 15px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(widget.value || "Start Loop"), x + buttonWidth / 2, buttonY + buttonHeight / 2);
+        ctx.restore();
+        return true;
+    };
+    widget.ttpSmartTileHighlighted = true;
+    node.size = [Math.max(Number(node.size?.[0]) || 0, 360), Math.max(Number(node.size?.[1]) || 0, 160)];
+    resizeNode(node);
 }
 
 async function queueSmartTileLoop(node, restart = false) {
@@ -686,6 +943,21 @@ function renderEditor(node) {
         stage.append(empty);
     }
 
+    const paintCanvas = ensurePaintMaskCanvas(node);
+    if (paintCanvas) {
+        paintCanvas.style.cssText = [
+            "position:absolute",
+            "inset:0",
+            "width:100%",
+            "height:100%",
+            "opacity:.55",
+            "mix-blend-mode:screen",
+            "pointer-events:none",
+            "z-index:70",
+        ].join(";");
+        stage.append(paintCanvas);
+    }
+
     for (const gap of coverage.gaps) {
         const overlay = document.createElement("div");
         overlay.title = "Uncovered area";
@@ -710,6 +982,67 @@ function renderEditor(node) {
             y: clampNumber((event.clientY - rect.top) / Math.max(1, rect.height), 0, 1),
         };
     };
+    const paintMode = String(node.ttpSmartTilePaintMode || "off");
+    const brushSize = Math.max(4, Math.min(512, Math.round(Number(node.ttpSmartTileBrushSize ?? 64) || 64)));
+    const paintAt = (event, lastPoint = null) => {
+        const canvas = ensurePaintMaskCanvas(node);
+        const context = canvas?.getContext("2d");
+        if (!canvas || !context) {
+            return null;
+        }
+        const point = pointFromEvent(event);
+        const x = point.x * canvas.width;
+        const y = point.y * canvas.height;
+        context.save();
+        context.globalCompositeOperation = paintMode === "erase" ? "destination-out" : "source-over";
+        context.lineCap = "round";
+        context.lineJoin = "round";
+        context.lineWidth = brushSize;
+        context.strokeStyle = "rgba(125,211,252,.95)";
+        context.fillStyle = "rgba(125,211,252,.95)";
+        context.beginPath();
+        if (lastPoint) {
+            context.moveTo(lastPoint.x * canvas.width, lastPoint.y * canvas.height);
+            context.lineTo(x, y);
+            context.stroke();
+        } else {
+            context.arc(x, y, brushSize / 2, 0, Math.PI * 2);
+            context.fill();
+        }
+        context.restore();
+        syncPaintMaskWidget(node);
+        scheduleCanvas(node);
+        return point;
+    };
+    stage.addEventListener("pointerdown", (event) => {
+        if (paintMode !== "paint" && paintMode !== "erase") {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        let lastPoint = paintAt(event);
+        const apply = (moveEvent) => {
+            moveEvent.preventDefault();
+            moveEvent.stopPropagation();
+            lastPoint = paintAt(moveEvent, lastPoint);
+        };
+        const cleanup = () => {
+            window.removeEventListener("pointermove", apply, true);
+            window.removeEventListener("pointerup", finish, true);
+            window.removeEventListener("pointercancel", finish, true);
+            window.removeEventListener("blur", finish, true);
+        };
+        const finish = (endEvent) => {
+            endEvent?.preventDefault?.();
+            endEvent?.stopPropagation?.();
+            cleanup();
+            renderEditor(node);
+        };
+        window.addEventListener("pointermove", apply, true);
+        window.addEventListener("pointerup", finish, true);
+        window.addEventListener("pointercancel", finish, true);
+        window.addEventListener("blur", finish, true);
+    }, true);
     const tileContainsPoint = (tile, point) => (
         point.x >= tile.x0 - 1e-6 &&
         point.x <= tile.x1 + 1e-6 &&
@@ -889,6 +1222,7 @@ function renderEditor(node) {
             "z-index:" + (selected ? "100" : String(10 + index)),
             "cursor:move",
             "user-select:none",
+            "pointer-events:" + (paintMode === "off" ? "auto" : "none"),
         ].join(";");
         regionElements.set(index, region);
         region.addEventListener("pointerdown", (event) => beginDrag(event, index, "move", region));
@@ -1046,6 +1380,56 @@ function renderEditor(node) {
     );
     controls.append(gridControls);
 
+    const paintControls = document.createElement("div");
+    paintControls.style.cssText = "display:flex;gap:6px;align-items:center;flex-wrap:wrap;";
+    const paintLabel = document.createElement("span");
+    paintLabel.textContent = "Mask";
+    paintLabel.style.cssText = "opacity:.78;";
+    const brushInput = createNumberInput(node.ttpSmartTileBrushSize ?? 64, 4, 512);
+    brushInput.title = "Brush size in source pixels";
+    brushInput.onchange = () => {
+        node.ttpSmartTileBrushSize = Math.max(4, Math.min(512, Math.round(Number(brushInput.value) || 64)));
+        renderEditor(node);
+    };
+    const paintButton = createButton("Brush", () => {
+        node.ttpSmartTilePaintMode = node.ttpSmartTilePaintMode === "paint" ? "off" : "paint";
+        renderEditor(node);
+    });
+    const eraseButton = createButton("Erase", () => {
+        node.ttpSmartTilePaintMode = node.ttpSmartTilePaintMode === "erase" ? "off" : "erase";
+        renderEditor(node);
+    });
+    if (paintMode === "paint") {
+        paintButton.style.background = "#38bdf8";
+        paintButton.style.borderColor = "#7dd3fc";
+        paintButton.style.color = "#082f49";
+    }
+    if (paintMode === "erase") {
+        eraseButton.style.background = "#f8fafc";
+        eraseButton.style.borderColor = "#e2e8f0";
+        eraseButton.style.color = "#0f172a";
+    }
+    paintControls.append(
+        paintLabel,
+        paintButton,
+        eraseButton,
+        document.createTextNode("px"),
+        brushInput,
+        createButton("Mask to Tile", () => {
+            if (addPaintMaskTiles(node, tiles, selectedIndex)) {
+                renderEditor(node);
+            } else {
+                renderEditor(node);
+            }
+        }, !paintMaskHasPixels(ensurePaintMaskCanvas(node)) || tiles.length >= MAX_TILES),
+        createButton("Clear mask", () => {
+            clearPaintMask(node);
+            node.ttpSmartTilePaintMode = "off";
+            renderEditor(node);
+        }, !paintMaskHasPixels(ensurePaintMaskCanvas(node)))
+    );
+    controls.append(paintControls);
+
     for (const [index] of tiles.entries()) {
         const button = createButton(`T${index + 1}`, () => {
             node.ttpSmartTileSelectedIndex = index;
@@ -1061,6 +1445,7 @@ function renderEditor(node) {
 
     actions.append(
         createButton("Auto Tile", () => {
+            syncPaintMaskWidget(node);
             inferSmartTileLayout(node);
         }),
         createButton("Add tile", () => {
@@ -1070,7 +1455,18 @@ function renderEditor(node) {
             const offset = Math.min(0.14, 0.03 * tiles.length);
             const x0 = Math.min(1 - width, Math.max(0, base.x0 + offset));
             const y0 = Math.min(1 - height, Math.max(0, base.y0 + offset));
-            writeLayout(node, [...tiles, { x0, y0, x1: x0 + width, y1: y0 + height }], tiles.length);
+            writeLayout(node, [...tiles, {
+                x0,
+                y0,
+                x1: x0 + width,
+                y1: y0 + height,
+                source: "manual",
+                label: "manual focus",
+                priority: 120,
+                importance: 1.0,
+                layer: 5,
+                occlusion_priority: 3000 + tiles.length,
+            }], tiles.length);
             renderEditor(node);
         }, tiles.length >= MAX_TILES),
         createButton("Delete", () => {
@@ -1109,7 +1505,12 @@ function renderEditor(node) {
 }
 
 function attachWidgetRefresh(node) {
-    setWidgetVisible(widgetByName(node, "auto_detect_request"), false);
+    const autoRequestWidget = widgetByName(node, "auto_detect_request");
+    setWidgetVisible(autoRequestWidget, false);
+    if (autoRequestWidget && Number(autoRequestWidget.value ?? 0) > 0) {
+        autoRequestWidget.value = 0;
+    }
+    setWidgetVisible(widgetByName(node, "auto_paint_mask"), false);
 
     const imageWidget = widgetByName(node, "image");
     if (imageWidget && !imageWidget.ttpSmartTileWrapped) {
@@ -1158,6 +1559,7 @@ app.registerExtension({
                         queueSmartTileLoop(this, true);
                     }, { serialize: false });
                 }
+                highlightLoopStartButton(this);
                 if (!widgetByName(this, "stop_tile_loop")) {
                     this.addWidget("button", "stop_tile_loop", "Stop Tile Loop", () => {
                         this.ttpSmartTileLoopActive = false;
@@ -1174,6 +1576,7 @@ app.registerExtension({
                 requestAnimationFrame(() => {
                     setWidgetVisible(widgetByName(this, "restart_request"), false);
                     setWidgetVisible(widgetByName(this, "loop_request"), false);
+                    highlightLoopStartButton(this);
                 });
             };
             return;

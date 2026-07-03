@@ -38,6 +38,9 @@ assert(!/\/ttp\/smart_tile\/analyze/.test(source), "Infer action should not use 
 assert(/occlusion_priority/.test(source), "interactive layout should preserve auto tile priority metadata");
 assert(/TTP_Smart_Tile_Loop_Source_Experimental/.test(source), "frontend should know the Smart Tile Loop Source node");
 assert(/Process All Tiles/.test(source), "loop source should expose a Process All Tiles button");
+assert(/Start Loop \/ Process All Tiles/.test(source), "loop source start button should be clearly labeled");
+assert(/function highlightLoopStartButton/.test(source), "loop source should highlight the start loop button");
+assert(/widget\.computeSize = \(width\) => \[Math\.max\(300/.test(source), "loop source start button should be larger than a default widget");
 assert(/Stop Tile Loop/.test(source), "loop source should expose a Stop Tile Loop button");
 assert(/ttp-smart-tile-loop/.test(source), "frontend should listen for Smart Tile loop progress events");
 assert(/queueSmartTileLoop\(node, false\)/.test(source), "loop event handler should queue the next tile automatically");
@@ -52,5 +55,20 @@ assert(/function fillTileGaps/.test(source), "tile editor should share automatic
 assert(/const filled = fillTileGaps\(node, layout\.tiles\);/.test(source), "Auto Tile should fill uncovered gaps before writing layout");
 assert(/source: "auto_gap"/.test(source), "auto-filled gap tiles should be marked as background gap tiles");
 assert(/"object_mask"/.test(source), "tile editor should preserve SAM object masks in layout metadata");
+assert(/ensurePaintMaskCanvas/.test(source), "tile editor should create a paint mask canvas");
+assert(/auto_paint_mask/.test(source), "tile editor should sync painted masks into the hidden backend input");
+assert(/Brush/.test(source), "tile editor should expose a paint brush action");
+assert(/Erase/.test(source), "tile editor should expose an erase action");
+assert(/Mask to Tile/.test(source), "tile editor should expose a button that commits painted masks into layout tiles");
+assert(/function addPaintMaskTiles/.test(source), "tile editor should convert painted masks into persisted tiles");
+assert(/source: "paint_mask"/.test(source), "paint-created tiles should be marked as paint mask tiles");
+assert(/object_mask:\s*\{/.test(source), "paint-created tiles should persist object masks in layout metadata");
+assert(/Clear mask/.test(source), "tile editor should expose a clear mask action");
+assert(/syncPaintMaskWidget\(node\);\s*inferSmartTileLayout\(node\);/s.test(source), "Auto Tile should submit the latest painted mask before inference");
+assert(!/PROMPT_BUILDER_NAME/.test(source), "frontend must not hook the QwenVL prompt builder node");
+assert(!/repairPromptBuilderWidgets/.test(source), "prompt builder values must be left to native ComfyUI widget serialization");
+assert(!/ttp_prompt_builder_values/.test(source), "prompt builder must not restore stale named widget values from properties");
+assert(!/ttp_prompt_builder_named_values/.test(source), "prompt builder should not use custom frontend persistence");
+assert(!/node\.widgets\?\.(?:sort|splice|reverse)/.test(source), "frontend must not reorder the LiteGraph widget array");
 
 console.log("smoke_smart_tile_interactive: ok");
