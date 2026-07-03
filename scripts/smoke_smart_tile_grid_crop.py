@@ -155,6 +155,7 @@ assert_equal(assemble_inputs["required"]["assemble_device"][0], ["auto", "cpu", 
 assert_equal(assemble_inputs["required"]["assemble_mode"][0], ["final_only", "always"], "assemble should expose final-only mode first")
 assert_equal(assemble_inputs["required"]["assemble_mode"][1]["default"], "final_only", "assemble should default to final-only loop compositing")
 assert_equal(assemble_inputs["required"]["base_canvas_mode"][0], ["auto", "black", "base_image", "source_image"], "assemble should expose base canvas source selection")
+assert_equal("small_tile_on_top" in assemble_inputs["required"], True, "assemble should expose small tile top stacking")
 assert_equal(assemble_inputs["optional"]["done"][0], "BOOLEAN", "assemble should accept loop done gate")
 preview_inputs = ttp.TTP_Smart_Tile_Set_Preview_Experimental.INPUT_TYPES()
 assert_equal(preview_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "tile set preview should accept Smart Tile Set")
@@ -942,6 +943,68 @@ black_canvas_color_matched, _black_canvas_color_weights = assemble_node.assemble
 )
 black_canvas_color_pixel = black_canvas_color_matched.array[0, 4, 4]
 assert_equal(float(black_canvas_color_pixel[0]) > float(black_canvas_color_pixel[2]), True, "black canvas mode should still allow base_image color reference")
+
+stack_meta = {
+    "type": "ttp_smart_tile",
+    "original_size": [8, 8],
+    "tiles": [
+        {
+            "name": "large_body",
+            "label": "person body",
+            "core_box": [0, 0, 8, 8],
+            "sample_box": [0, 0, 8, 8],
+            "tile_canvas_size": [8, 8],
+            "tile_canvas_box": [0, 0, 8, 8],
+            "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+            "blend": 0,
+            "importance": 1.0,
+            "priority": 100.0,
+            "layer": 2,
+            "occlusion_priority": 1000,
+        },
+        {
+            "name": "small_face",
+            "label": "local detail",
+            "core_box": [2, 2, 6, 6],
+            "sample_box": [2, 2, 4, 4],
+            "tile_canvas_size": [4, 4],
+            "tile_canvas_box": [0, 0, 4, 4],
+            "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+            "blend": 0,
+            "importance": 1.0,
+            "priority": 0.0,
+            "layer": 0,
+            "occlusion_priority": 0,
+        },
+    ],
+}
+stack_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "tile_meta": stack_meta,
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (220, 20, 20)))[0],
+        ttp.pil2tensor(Image.new("RGB", (4, 4), (20, 20, 220)))[0],
+    ],
+}
+large_above, _large_above_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    tile_set=stack_tile_set,
+)
+large_above_pixel = large_above.array[0, 4, 4]
+assert_equal(float(large_above_pixel[0]) > float(large_above_pixel[2]), True, "explicit large tile priority should cover a small tile when small_tile_on_top is disabled")
+small_above, _small_above_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    small_tile_on_top=True,
+    tile_set=stack_tile_set,
+)
+small_above_pixel = small_above.array[0, 4, 4]
+assert_equal(float(small_above_pixel[2]) > float(small_above_pixel[0]), True, "small_tile_on_top should stack smaller tiles above larger context tiles")
 
 deferred_output, deferred_weights = assemble_node.assemble_tiles(
     blend_multiplier=1.0,

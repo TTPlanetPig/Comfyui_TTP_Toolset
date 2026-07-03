@@ -3538,6 +3538,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 "assemble_device": (["auto", "cpu", "gpu"], {"default": "auto"}),
                 "assemble_mode": (["final_only", "always"], {"default": "final_only"}),
                 "base_canvas_mode": (["auto", "black", "base_image", "source_image"], {"default": "auto"}),
+                "small_tile_on_top": ("BOOLEAN", {"default": False}),
             },
             "optional": {
                 "sampled_tiles": ("IMAGE",),
@@ -3575,6 +3576,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
         assemble_device="auto",
         assemble_mode="final_only",
         base_canvas_mode="auto",
+        small_tile_on_top=False,
         sampled_tiles=None,
         tile_meta=None,
         tile_set=None,
@@ -3680,7 +3682,8 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 canvas = np.zeros((output_height, output_width, 3), dtype=np.float32)
                 weights = np.zeros((output_height, output_width, 1), dtype=np.float32)
 
-        use_occlusion = any(
+        small_tile_on_top = bool(small_tile_on_top)
+        use_occlusion = small_tile_on_top or any(
             float(tile.get("occlusion_priority", 0.0)) != 0.0 or int(tile.get("layer", 0)) != 0
             for tile in tiles_info
         )
@@ -3710,6 +3713,12 @@ class TTP_Smart_Tile_Assemble_Experimental:
         context_tile_weight = _ttp_clamp(float(context_tile_weight), 0.0, 1.0)
         original_area = max(1.0, float(original_width) * float(original_height))
         has_base_canvas = base_source_image is not None
+        focus_label_keywords = (
+            "face", "head", "eye", "eyes", "eyelash", "eyebrow", "glasses",
+            "hand", "hands", "finger", "fingers", "mouth", "lip", "lips",
+            "teeth", "nose", "ear", "ears", "text", "letter", "logo",
+            "detail", "focus",
+        )
         alignment_stats = {
             "gpu": 0,
             "cpu": 0,
@@ -3803,6 +3812,12 @@ class TTP_Smart_Tile_Assemble_Experimental:
             rank_occlusion = float(tile.get("occlusion_priority", 0.0))
             rank_layer = float(tile.get("layer", 0.0))
             rank_priority = priority
+            if small_tile_on_top and not is_large_tile:
+                small_tile_rank = 10000.0 + (1.0 - _ttp_clamp(tile_area_ratio, 0.0, 1.0)) * 9000.0
+                if any(keyword in tile_label for keyword in focus_label_keywords):
+                    small_tile_rank += 1000.0
+                rank_occlusion = max(rank_occlusion, small_tile_rank)
+                rank_layer = max(rank_layer, 1.0)
             if is_large_tile and large_tile_policy == "context_only" and has_base_canvas:
                 mask = mask * context_tile_weight
                 rank_occlusion = min(rank_occlusion, 0.0)
