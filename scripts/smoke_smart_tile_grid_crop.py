@@ -929,6 +929,20 @@ deferred_pixel = deferred_output.array[0, 4, 4]
 assert_equal(float(deferred_pixel[0]) > float(deferred_pixel[2]), True, "final-only assemble should return the base preview before loop completion")
 assert_equal(float(deferred_weights.array.max()), 0.0, "final-only assemble should skip weight drawing before loop completion")
 
+forced_final_output, forced_final_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    assemble_mode="always",
+    pixel_alignment="edge_match",
+    done=False,
+    tile_set=blue_tile_set,
+    base_image=red_reference,
+)
+forced_pixel = forced_final_output.array[0, 4, 4]
+assert_equal(float(forced_pixel[0]) > float(forced_pixel[2]), True, "pixel alignment should force final-only preview during unfinished loops")
+assert_equal(float(forced_final_weights.array.max()), 0.0, "pixel alignment forced final-only mode should skip intermediate weights")
+
 base_scale_meta = {
     "type": "ttp_smart_tile",
     "original_size": [8, 8],

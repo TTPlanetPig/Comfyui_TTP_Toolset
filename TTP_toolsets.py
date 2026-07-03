@@ -3601,7 +3601,12 @@ class TTP_Smart_Tile_Assemble_Experimental:
         elif len(tile_images) != len(tiles_info):
             raise ValueError(f"tile_set images ({len(tile_images)}) do not match tile_meta tiles ({len(tiles_info)})")
 
-        if str(assemble_mode or "final_only") == "final_only" and done is not None and not bool(done):
+        requested_assemble_mode = str(assemble_mode or "final_only")
+        effective_assemble_mode = requested_assemble_mode
+        if requested_assemble_mode == "always" and str(pixel_alignment) != "off" and done is not None:
+            effective_assemble_mode = "final_only"
+
+        if effective_assemble_mode == "final_only" and done is not None and not bool(done):
             return _ttp_assemble_placeholder_output(tile_images, base_image=base_image, source_image=source_image)
 
         original_width, original_height = tile_meta["original_size"]
@@ -3950,7 +3955,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
             print(
                 "[TTP Smart Tile] assemble paste "
                 f"requested_device={assemble_device_mode} actual_device={actual_assemble_device} "
-                f"mode={assemble_mode} tiles={len(tiles_info)} "
+                f"mode={effective_assemble_mode} requested_mode={requested_assemble_mode} tiles={len(tiles_info)} "
                 f"fallback={assemble_fallback_reason or 'none'}"
             )
 
