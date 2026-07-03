@@ -32,54 +32,35 @@ https://github.com/user-attachments/assets/af06b9d3-9c84-4a83-ba90-eb4ec4bb2e99
 
 ## **Instructions**
 
-### **Smart Tile Experimental Workflow**
+### **Smart Tile Workflow**
 
-The **Smart Tile Experimental** nodes provide a manual tile workflow that keeps the existing automatic tile nodes unchanged. They are designed for layouts where you want to split the image by visual structure, such as face, hands, subject, clothes, foreground, and background.
+The **Smart Tile** nodes provide an interactive tile workflow for layouts where you want to split an image by visual structure, such as face, hands, subject, clothes, foreground, and background.
 
-The first experimental version uses a **larger overlap sampling area** around real tile seams and a **smaller paste area** for the final composition:
+Current workflow nodes:
 
-- `TTP Smart Tile Layout (Experimental)`: stores a JSON tile layout.
-- `TTP Smart Tile Crop (Experimental)`: reads the input image directly, crops tile images with seam-only overlap, and outputs tile metadata plus a debug preview.
-- `TTP Smart Tile Param Crop (Experimental)`: creates a parameter-based crop plan without JSON, using grid controls plus optional focus regions.
-- `TTP Smart Tile Interactive Crop (Experimental)`: adds a front-end tile editor for still images. It uses the same official ComfyUI image upload/dropdown widget style as `Load Image`, can also use a connected `source_image`, and lets you drag/resize tile rectangles on top of the image.
-- `TTP Smart Tile Assemble (Experimental)`: assembles sampled tiles back into the final image with feathered weighted blending, priority, and importance weights.
+- `TTP Smart Tile Interactive Crop`: loads or receives a source image, provides the visual tile editor, supports manual tiles, painted masks, and SAM/QwenVL auto tile requests, and outputs a variable-size `tile_set`.
+- `TTP Smart Tile Set Preview`: previews a tile set as a contact sheet or a single selected tile.
+- `TTP QwenVL3 Local Loader`: loads a local QwenVL tagging model from ComfyUI models.
+- `TTP Smart Tile QwenVL Prompt Set Builder`: prepares per-tile prompts before loop processing.
+- `TTP Smart Tile Loop Source`: outputs one tile at a time for sampler/img2img processing.
+- `TTP Smart Tile Loop Collect`: collects processed tiles back into the tile set.
+- `TTP Smart Tile Image Upscale Prep`: optionally upscales one tile before sampling.
+- `TTP Smart Tile Assemble`: assembles processed tiles back into the final image with feathered blending, mask support, priority/layer handling, color correction, and optional CPU/GPU pixel alignment.
+- `TTP Smart Tile Save Final Image`: saves only the final loop result and embeds workflow metadata.
 
-Interactive image workflow:
-
-```text
-TTP Smart Tile Interactive Crop (Experimental)
-  → upload/select image with the official image widget or connect source_image
-  → drag/resize/add/delete/fill tile rectangles in the node
-  → VAE Encode / Sampler / VAE Decode
-  → TTP Smart Tile Assemble (Experimental)
-  → Final Image
-```
-
-Parameter workflow without JSON:
+Interactive loop workflow:
 
 ```text
-Load Image
-  → TTP Smart Tile Param Crop (Experimental)
-  → Preview the plan output and tune grid/focus parameters
-  → VAE Encode / Sampler / VAE Decode
-  → TTP Smart Tile Assemble (Experimental)
-  → Final Image
+TTP Smart Tile Interactive Crop
+  -> TTP Smart Tile QwenVL Prompt Set Builder (optional)
+  -> TTP Smart Tile Loop Source
+  -> VAE Encode / Sampler / VAE Decode
+  -> TTP Smart Tile Loop Collect
+  -> TTP Smart Tile Assemble
+  -> TTP Smart Tile Save Final Image
 ```
 
-`TTP Smart Tile Interactive Crop (Experimental)` is the recommended starting point when you want to manually split a still image by visual regions. Its `image` input follows the official `Load Image` pattern, so uploads go to ComfyUI's input folder and the workflow stores the selected filename instead of embedding the whole image. The editor can generate a standard grid from column/row numbers, replace the full layout with that grid, or subdivide the currently selected tile. It stores the tile layout in a hidden widget so the workflow keeps the current plan.
-
-`TTP Smart Tile Param Crop (Experimental)` is useful when you want a repeatable grid/focus layout from numeric controls. It provides controls for grid columns/rows, grid overlap/blending, optional full-image coverage, and two optional focus boxes. Connect its `preview` output to `PreviewImage` while adjusting parameters.
-
-JSON workflow:
-
-```text
-Load Image
-  → TTP Smart Tile Layout (Experimental)
-  → TTP Smart Tile Crop (Experimental)
-  → VAE Encode / Sampler / VAE Decode
-  → TTP Smart Tile Assemble (Experimental)
-  → Final Image
-```
+`TTP Smart Tile Interactive Crop` is the recommended starting point when you want to manually or automatically split a still image by visual regions. Its `image` input follows the official `Load Image` pattern, so uploads go to ComfyUI's input folder and the workflow stores the selected filename instead of embedding the whole image. The editor can generate a standard grid from column/row numbers, replace the full layout with that grid, subdivide the currently selected tile, add painted-mask tiles, and fill uncovered gaps. It stores the tile layout in a hidden widget so the workflow keeps the current plan.
 
 Example layout:
 

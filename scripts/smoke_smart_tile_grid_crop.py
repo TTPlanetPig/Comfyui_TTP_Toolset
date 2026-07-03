@@ -83,6 +83,37 @@ install_comfy_stubs()
 import TTP_toolsets as ttp  # noqa: E402
 
 
+assert_equal(
+    "TTP_Smart_Tile_Layout_Experimental" in ttp.NODE_CLASS_MAPPINGS,
+    False,
+    "old Smart Tile layout step node should not be registered",
+)
+assert_equal(
+    "TTP_Smart_Tile_Crop_Experimental" in ttp.NODE_CLASS_MAPPINGS,
+    False,
+    "old Smart Tile crop step node should not be registered",
+)
+assert_equal(
+    "TTP_Smart_Tile_Visual_Crop_Experimental" in ttp.NODE_CLASS_MAPPINGS,
+    False,
+    "old Smart Tile param crop step node should not be registered",
+)
+assert_equal(
+    "(Experimental)" in ttp.NODE_DISPLAY_NAME_MAPPINGS["TTP_Smart_Tile_Interactive_Crop_Experimental"],
+    False,
+    "interactive crop display name should not include Experimental",
+)
+assert_equal(
+    ttp.NODE_DISPLAY_NAME_MAPPINGS["TTP_Smart_Tile_Loop_Source_Experimental"],
+    "TTP Smart Tile Loop Source",
+    "loop workflow display names should be stable and non-experimental",
+)
+assert_equal(
+    ttp.TTP_Smart_Tile_Interactive_Crop_Experimental.CATEGORY,
+    "TTP/Smart Tile",
+    "Smart Tile nodes should use the non-experimental menu category",
+)
+
 interactive_inputs = ttp.TTP_Smart_Tile_Interactive_Crop_Experimental.INPUT_TYPES()
 required_inputs = interactive_inputs["required"]
 optional_inputs = interactive_inputs["optional"]

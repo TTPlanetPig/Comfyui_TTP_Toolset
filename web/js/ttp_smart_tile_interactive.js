@@ -837,10 +837,21 @@ function applyLoopEvent(detail) {
 }
 
 function editorHeight(node) {
+    return Math.max(360, editorStageSize(node).height + 156);
+}
+
+function editorStageSize(node) {
     const size = imageSourceSize(node);
-    const aspect = size ? Math.max(0.25, Math.min(4, size.height / size.width)) : 0.72;
-    const width = Math.max(360, Math.round(Number(node.size?.[0] ?? 560) - 20));
-    return Math.max(360, Math.round(width * aspect) + 156);
+    const availableWidth = Math.max(360, Math.round(Number(node.size?.[0] ?? 560) - 36));
+    const aspect = size ? Math.max(0.25, Math.min(4, size.height / size.width)) : 9 / 16;
+    let width = availableWidth;
+    let height = Math.max(220, Math.round(width * aspect));
+    const maxHeight = 720;
+    if (height > maxHeight) {
+        height = maxHeight;
+        width = Math.max(220, Math.round(height / aspect));
+    }
+    return { width, height };
 }
 
 function ensureEditor(node) {
@@ -900,13 +911,14 @@ function renderEditor(node) {
     value.style.cssText = "opacity:.78;text-align:right;";
     header.append(title, value);
 
+    const stageSize = editorStageSize(node);
     const stage = document.createElement("div");
     stage.style.cssText = [
         "position:relative",
-        "width:100%",
-        "aspect-ratio:" + (sourceSize ? `${sourceSize.width} / ${sourceSize.height}` : "16 / 9"),
-        "min-height:220px",
-        "max-height:720px",
+        `width:${stageSize.width}px`,
+        "max-width:100%",
+        `height:${stageSize.height}px`,
+        "margin:0 auto",
         "border:1px solid rgba(226,232,240,.45)",
         "border-radius:6px",
         "overflow:hidden",

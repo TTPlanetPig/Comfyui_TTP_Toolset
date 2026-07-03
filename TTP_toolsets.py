@@ -1383,7 +1383,7 @@ def _ttp_tile_set_fingerprint(tile_set):
 
 def _ttp_validate_tile_set(tile_set):
     if not isinstance(tile_set, dict) or tile_set.get("type") != "ttp_smart_tile_set":
-        raise ValueError("tile_set must come from TTP Smart Tile Interactive Crop (Experimental)")
+        raise ValueError("tile_set must come from TTP Smart Tile Interactive Crop")
     tile_images = tile_set.get("tile_images", [])
     tile_meta = tile_set.get("tile_meta", {})
     tiles_info = tile_meta.get("tiles", [])
@@ -2405,7 +2405,7 @@ class TTP_Smart_Tile_Layout_Experimental:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("layout_json",)
     FUNCTION = "pass_layout"
-    CATEGORY = "TTP/Smart Tile Experimental"
+    CATEGORY = "TTP/Smart Tile"
 
     def pass_layout(self, layout_json):
         return (layout_json,)
@@ -2432,7 +2432,7 @@ class TTP_Smart_Tile_Crop_Experimental:
     RETURN_TYPES = ("IMAGE", "TTP_SMART_TILE_META", "LIST", "IMAGE")
     RETURN_NAMES = ("tiles", "tile_meta", "positions", "preview")
     FUNCTION = "crop_tiles"
-    CATEGORY = "TTP/Smart Tile Experimental"
+    CATEGORY = "TTP/Smart Tile"
 
     def crop_tiles(self, image, layout_json, round_to=8):
         pil_image = tensor2pil(image[0].unsqueeze(0)).convert("RGB")
@@ -2475,7 +2475,7 @@ class TTP_Smart_Tile_Visual_Crop_Experimental:
     RETURN_TYPES = ("IMAGE", "TTP_SMART_TILE_META", "LIST", "IMAGE")
     RETURN_NAMES = ("tiles", "tile_meta", "positions", "preview")
     FUNCTION = "visual_crop_tiles"
-    CATEGORY = "TTP/Smart Tile Experimental"
+    CATEGORY = "TTP/Smart Tile"
 
     def _add_tile_meta(self, raw_tiles, image_width, image_height):
         tiles_meta = []
@@ -2615,7 +2615,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
     RETURN_TYPES = ("IMAGE", "IMAGE", "TTP_SMART_TILE_SET", "TTP_SMART_TILE_META", "LIST", "IMAGE", "STRING")
     RETURN_NAMES = ("source_image", "tiles", "tile_set", "tile_meta", "positions", "preview", "layout_json")
     FUNCTION = "interactive_crop_tiles"
-    CATEGORY = "TTP/Smart Tile Experimental"
+    CATEGORY = "TTP/Smart Tile"
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
@@ -2762,7 +2762,7 @@ class TTP_Smart_Tile_Set_Preview_Experimental:
     RETURN_TYPES = ("IMAGE", "STRING")
     RETURN_NAMES = ("image", "info")
     FUNCTION = "preview_tile_set"
-    CATEGORY = "TTP/Smart Tile Experimental"
+    CATEGORY = "TTP/Smart Tile"
 
     def preview_tile_set(
         self,
@@ -2774,7 +2774,7 @@ class TTP_Smart_Tile_Set_Preview_Experimental:
         show_labels=True,
     ):
         if not isinstance(tile_set, dict) or tile_set.get("type") != "ttp_smart_tile_set":
-            raise ValueError("tile_set must come from TTP Smart Tile Interactive Crop (Experimental)")
+            raise ValueError("tile_set must come from TTP Smart Tile Interactive Crop")
         tile_images = tile_set.get("tile_images", [])
         tile_meta = tile_set.get("tile_meta", {})
         tiles_info = tile_meta.get("tiles", [])
@@ -2848,7 +2848,7 @@ class TTP_QwenVL3_Local_Loader_Experimental:
     RETURN_TYPES = ("TTP_QWENVL3_MODEL", "STRING")
     RETURN_NAMES = ("qwen_vl_model", "info")
     FUNCTION = "load_model"
-    CATEGORY = "TTP/Smart Tile Experimental"
+    CATEGORY = "TTP/Smart Tile"
 
     def load_model(self, model_file, model_family="auto", device="default"):
         loaded = _ttp_load_qwenvl3_local_model(
@@ -2898,7 +2898,7 @@ class TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental:
     RETURN_TYPES = ("TTP_SMART_TILE_SET", "STRING", "STRING")
     RETURN_NAMES = ("tile_set", "prompt_set_json", "summary")
     FUNCTION = "build_prompt_set"
-    CATEGORY = "TTP/Smart Tile Experimental"
+    CATEGORY = "TTP/Smart Tile"
 
     def build_prompt_set(
         self,
@@ -3214,7 +3214,7 @@ class TTP_Smart_Tile_Loop_Source_Experimental:
     RETURN_TYPES = ("IMAGE", "TTP_SMART_TILE_TASK", "INT", "INT", "BOOLEAN", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "CONDITIONING", "CONDITIONING")
     RETURN_NAMES = ("image", "tile_task", "index", "count", "done", "status", "prompt", "negative", "caption", "label", "prompt_tag", "positive_conditioning", "negative_conditioning")
     FUNCTION = "loop_source"
-    CATEGORY = "TTP/Smart Tile Experimental"
+    CATEGORY = "TTP/Smart Tile"
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
@@ -3304,7 +3304,7 @@ class TTP_Smart_Tile_Loop_Collect_Experimental:
     RETURN_TYPES = ("TTP_SMART_TILE_SET", "BOOLEAN", "INT", "STRING")
     RETURN_NAMES = ("tile_set", "done", "next_index", "status")
     FUNCTION = "loop_collect"
-    CATEGORY = "TTP/Smart Tile Experimental"
+    CATEGORY = "TTP/Smart Tile"
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
@@ -3320,7 +3320,7 @@ class TTP_Smart_Tile_Loop_Collect_Experimental:
 
     def loop_collect(self, tile_task, processed_image):
         if not isinstance(tile_task, dict) or tile_task.get("type") != "ttp_smart_tile_task":
-            raise ValueError("tile_task must come from TTP Smart Tile Loop Source (Experimental)")
+            raise ValueError("tile_task must come from TTP Smart Tile Loop Source")
         session_id = str(tile_task.get("session_id", "default"))
         session = _TTP_SMART_TILE_LOOP_SESSIONS.get(session_id)
         if session is None:
@@ -3359,7 +3359,7 @@ class TTP_Smart_Tile_Image_Upscale_Prep_Experimental:
     RETURN_TYPES = ("IMAGE", "STRING")
     RETURN_NAMES = ("image", "info")
     FUNCTION = "upscale_tile"
-    CATEGORY = "TTP/Smart Tile Experimental"
+    CATEGORY = "TTP/Smart Tile"
 
     def upscale_tile(self, image, scale=2.0, round_to=8, resampling="lanczos"):
         pil = _ttp_image_tensor_to_pil(_ttp_first_image_tensor(image))
@@ -3402,7 +3402,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
     RETURN_TYPES = ("IMAGE", "IMAGE")
     RETURN_NAMES = ("image", "weight_preview")
     FUNCTION = "assemble_tiles"
-    CATEGORY = "TTP/Smart Tile Experimental"
+    CATEGORY = "TTP/Smart Tile"
 
     def assemble_tiles(
         self,
@@ -3431,12 +3431,12 @@ class TTP_Smart_Tile_Assemble_Experimental:
         tile_images = None
         if tile_set is not None:
             if not isinstance(tile_set, dict) or tile_set.get("type") != "ttp_smart_tile_set":
-                raise ValueError("tile_set must come from TTP Smart Tile Interactive Crop (Experimental)")
+                raise ValueError("tile_set must come from TTP Smart Tile Interactive Crop")
             tile_meta = tile_set.get("tile_meta")
             tile_images = tile_set.get("tile_images", [])
 
         if not isinstance(tile_meta, dict) or tile_meta.get("type") != "ttp_smart_tile":
-            raise ValueError("tile_meta must come from TTP Smart Tile Crop (Experimental)")
+            raise ValueError("tile_meta must come from TTP Smart Tile Crop")
 
         tiles_info = tile_meta.get("tiles", [])
         if tile_images is None:
@@ -3726,7 +3726,7 @@ class TTP_Smart_Tile_Save_Final_Image_Experimental:
     RETURN_TYPES = ()
     FUNCTION = "save_final_image"
     OUTPUT_NODE = True
-    CATEGORY = "TTP/Smart Tile Experimental"
+    CATEGORY = "TTP/Smart Tile"
 
     def save_final_image(self, images, done=True, filename_prefix="TTP_Smart_Tile", prompt=None, extra_pnginfo=None):
         if not bool(done):
@@ -4606,9 +4606,6 @@ NODE_CLASS_MAPPINGS = {
     "TTP_Expand_And_Mask": TTP_Expand_And_Mask,
     "TTP_text_mix": TTP_text_mix,
     "TeaCacheHunyuanVideoSampler": TeaCacheHunyuanVideoSampler,
-    "TTP_Smart_Tile_Layout_Experimental": TTP_Smart_Tile_Layout_Experimental,
-    "TTP_Smart_Tile_Crop_Experimental": TTP_Smart_Tile_Crop_Experimental,
-    "TTP_Smart_Tile_Visual_Crop_Experimental": TTP_Smart_Tile_Visual_Crop_Experimental,
     "TTP_Smart_Tile_Interactive_Crop_Experimental": TTP_Smart_Tile_Interactive_Crop_Experimental,
     "TTP_Smart_Tile_Set_Preview_Experimental": TTP_Smart_Tile_Set_Preview_Experimental,
     "TTP_QwenVL3_Local_Loader_Experimental": TTP_QwenVL3_Local_Loader_Experimental,
@@ -4632,16 +4629,13 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TTP_Expand_And_Mask": "TTP_Expand_And_Mask",
     "TTP_text_mix": "TTP_text_mix",
     "TeaCacheHunyuanVideoSampler": "TTP_TeaCache HunyuanVideo Sampler",
-    "TTP_Smart_Tile_Layout_Experimental": "TTP Smart Tile Layout (Experimental)",
-    "TTP_Smart_Tile_Crop_Experimental": "TTP Smart Tile Crop (Experimental)",
-    "TTP_Smart_Tile_Visual_Crop_Experimental": "TTP Smart Tile Param Crop (Experimental)",
-    "TTP_Smart_Tile_Interactive_Crop_Experimental": "TTP Smart Tile Interactive Crop (Experimental)",
-    "TTP_Smart_Tile_Set_Preview_Experimental": "TTP Smart Tile Set Preview (Experimental)",
-    "TTP_QwenVL3_Local_Loader_Experimental": "TTP QwenVL3 Local Loader (Experimental)",
-    "TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental": "TTP Smart Tile QwenVL Prompt Set Builder (Experimental)",
-    "TTP_Smart_Tile_Loop_Source_Experimental": "TTP Smart Tile Loop Source (Experimental)",
-    "TTP_Smart_Tile_Loop_Collect_Experimental": "TTP Smart Tile Loop Collect (Experimental)",
-    "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": "TTP Smart Tile Image Upscale Prep (Experimental)",
-    "TTP_Smart_Tile_Assemble_Experimental": "TTP Smart Tile Assemble (Experimental)",
-    "TTP_Smart_Tile_Save_Final_Image_Experimental": "TTP Smart Tile Save Final Image (Experimental)",
+    "TTP_Smart_Tile_Interactive_Crop_Experimental": "TTP Smart Tile Interactive Crop",
+    "TTP_Smart_Tile_Set_Preview_Experimental": "TTP Smart Tile Set Preview",
+    "TTP_QwenVL3_Local_Loader_Experimental": "TTP QwenVL3 Local Loader",
+    "TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental": "TTP Smart Tile QwenVL Prompt Set Builder",
+    "TTP_Smart_Tile_Loop_Source_Experimental": "TTP Smart Tile Loop Source",
+    "TTP_Smart_Tile_Loop_Collect_Experimental": "TTP Smart Tile Loop Collect",
+    "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": "TTP Smart Tile Image Upscale Prep",
+    "TTP_Smart_Tile_Assemble_Experimental": "TTP Smart Tile Assemble",
+    "TTP_Smart_Tile_Save_Final_Image_Experimental": "TTP Smart Tile Save Final Image",
 }
