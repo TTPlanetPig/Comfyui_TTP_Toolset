@@ -887,6 +887,154 @@ def _ttp_find_pixel_alignment_offset(region, reference, weights, out_x, out_y, m
     return best_offset
 
 
+def _ttp_alignment_torch_device(device_mode="auto"):
+    device_mode = str(device_mode or "auto").lower()
+    if device_mode == "cpu":
+        return None
+    try:
+        device = comfy.model_management.get_torch_device()
+    except Exception:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if getattr(device, "type", "cpu") == "cpu":
+        return None
+    return device
+
+
+def _ttp_find_pixel_alignment_offset_gpu(
+    region,
+    reference,
+    weights,
+    out_x,
+    out_y,
+    mask,
+    radius=0,
+    mode="off",
+    device_mode="auto",
+    max_samples=32768,
+):
+    radius = max(0, int(radius))
+    if radius <= 0 or str(mode) == "off":
+        return (0, 0), {"device": "off", "samples": 0, "fallback": False}
+    device = _ttp_alignment_torch_device(device_mode)
+    if device is None:
+        return None
+    if region.size == 0 or reference.size == 0:
+        return (0, 0), {"device": str(device), "samples": 0, "fallback": False}
+
+    align_weights = _ttp_alignment_weight_mask(mask, mode)
+    if float(align_weights.sum()) < 16.0:
+        return (0, 0), {"device": str(device), "samples": 0, "fallback": False}
+
+    height, width = region.shape[:2]
+    ys, xs = np.nonzero(align_weights > 1e-6)
+    if len(xs) < 16:
+        return (0, 0), {"device": str(device), "samples": int(len(xs)), "fallback": False}
+    max_samples = max(256, int(max_samples or 32768))
+    original_samples = int(len(xs))
+    if len(xs) > max_samples:
+        indices = np.linspace(0, len(xs) - 1, max_samples).astype(np.int64)
+        xs = xs[indices]
+        ys = ys[indices]
+
+    offsets = [(dx, dy) for dy in range(-radius, radius + 1) for dx in range(-radius, radius + 1)]
+    if not offsets:
+        return (0, 0), {"device": str(device), "samples": int(len(xs)), "fallback": False}
+
+    try:
+        with torch.inference_mode():
+            xs_t = torch.as_tensor(xs.astype(np.int64), device=device)
+            ys_t = torch.as_tensor(ys.astype(np.int64), device=device)
+            sample_region = torch.as_tensor(region[ys, xs].astype(np.float32), device=device)
+            sample_weight = torch.as_tensor(align_weights[ys, xs].astype(np.float32), device=device)
+            reference_t = torch.as_tensor(reference.astype(np.float32), device=device)
+            ref_flat = reference_t.reshape(-1, reference_t.shape[-1])
+            if weights is not None:
+                weight_t = torch.as_tensor(weights[:, :, 0].astype(np.float32), device=device)
+                weight_flat = weight_t.reshape(-1)
+            else:
+                weight_flat = None
+
+            offset_t = torch.as_tensor(offsets, dtype=torch.int64, device=device)
+            ref_h, ref_w = int(reference.shape[0]), int(reference.shape[1])
+            best_score = None
+            best_offset = (0, 0)
+            chunk_size = max(8, min(512, int(4000000 // max(1, len(xs)))))
+            for start in range(0, int(offset_t.shape[0]), chunk_size):
+                chunk = offset_t[start:start + chunk_size]
+                dx = chunk[:, 0:1]
+                dy = chunk[:, 1:2]
+                rx = int(out_x) + dx + xs_t[None, :]
+                ry = int(out_y) + dy + ys_t[None, :]
+                valid = (rx >= 0) & (rx < ref_w) & (ry >= 0) & (ry < ref_h)
+                flat_index = torch.clamp(ry, 0, ref_h - 1) * ref_w + torch.clamp(rx, 0, ref_w - 1)
+                local_weight = sample_weight[None, :] * valid.to(torch.float32)
+                if weight_flat is not None:
+                    local_weight = local_weight * (weight_flat[flat_index] > 1e-6).to(torch.float32)
+                weight_sum = local_weight.sum(dim=1)
+                usable = weight_sum >= 16.0
+                if not bool(torch.any(usable).item()):
+                    continue
+                ref_samples = ref_flat[flat_index]
+                diff = sample_region[None, :, :] - ref_samples
+                mse = torch.mean(diff * diff, dim=2)
+                scores = (mse * local_weight).sum(dim=1) / torch.clamp(weight_sum, min=1e-6)
+                penalty = (torch.abs(chunk[:, 0]).to(torch.float32) + torch.abs(chunk[:, 1]).to(torch.float32)) * 1e-5
+                scores = scores + penalty
+                scores = torch.where(usable, scores, torch.full_like(scores, float("inf")))
+                score, index = torch.min(scores, dim=0)
+                score_value = float(score.item())
+                if np.isfinite(score_value) and (best_score is None or score_value < best_score):
+                    best_score = score_value
+                    best = chunk[int(index.item())]
+                    best_offset = (int(best[0].item()), int(best[1].item()))
+            return best_offset, {
+                "device": str(device),
+                "samples": int(len(xs)),
+                "source_samples": int(original_samples),
+                "candidates": int(len(offsets)),
+                "fallback": False,
+            }
+    except Exception as error:
+        if str(device_mode or "auto").lower() == "gpu":
+            print(f"[TTP Smart Tile] pixel alignment GPU failed, falling back to CPU: {type(error).__name__}: {error}")
+        return None
+
+
+def _ttp_find_pixel_alignment_offset_auto(
+    region,
+    reference,
+    weights,
+    out_x,
+    out_y,
+    mask,
+    radius=0,
+    mode="off",
+    device_mode="auto",
+):
+    if str(device_mode or "auto").lower() != "cpu":
+        gpu_result = _ttp_find_pixel_alignment_offset_gpu(
+            region,
+            reference,
+            weights,
+            out_x,
+            out_y,
+            mask,
+            radius,
+            mode,
+            device_mode,
+        )
+        if gpu_result is not None:
+            offset, info = gpu_result
+            return offset[0], offset[1], info
+    offset = _ttp_find_pixel_alignment_offset(region, reference, weights, out_x, out_y, mask, radius, mode)
+    return offset[0], offset[1], {
+        "device": "cpu",
+        "samples": int(np.count_nonzero(_ttp_alignment_weight_mask(mask, mode) > 1e-6)) if str(mode) != "off" else 0,
+        "candidates": int((max(0, int(radius)) * 2 + 1) ** 2),
+        "fallback": str(device_mode or "auto").lower() != "cpu",
+    }
+
+
 def _ttp_bbox_to_xyxy(box):
     if isinstance(box, dict):
         if all(key in box for key in ("x", "y", "width", "height")):
@@ -3235,6 +3383,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 "mask_blend_mode": (["off", "auto", "mask_only", "mask_feather"], {"default": "mask_feather"}),
                 "pixel_alignment": (["off", "mask_edge_match", "edge_match"], {"default": "off"}),
                 "pixel_alignment_radius": ("INT", {"default": 8, "min": 0, "max": 64, "step": 1}),
+                "pixel_alignment_device": (["auto", "cpu", "gpu"], {"default": "auto"}),
                 "large_tile_policy": (["use_if_higher_resolution", "context_only", "always_use"], {"default": "use_if_higher_resolution"}),
                 "large_tile_area_threshold": ("FLOAT", {"default": 0.55, "min": 0.05, "max": 1.0, "step": 0.01}),
                 "min_tile_scale_ratio": ("FLOAT", {"default": 0.95, "min": 0.25, "max": 2.0, "step": 0.05}),
@@ -3267,6 +3416,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
         mask_blend_mode="mask_feather",
         pixel_alignment="off",
         pixel_alignment_radius=8,
+        pixel_alignment_device="auto",
         large_tile_policy="use_if_higher_resolution",
         large_tile_area_threshold=0.55,
         min_tile_scale_ratio=0.95,
@@ -3359,6 +3509,15 @@ class TTP_Smart_Tile_Assemble_Experimental:
         context_tile_weight = _ttp_clamp(float(context_tile_weight), 0.0, 1.0)
         original_area = max(1.0, float(original_width) * float(original_height))
         has_base_canvas = base_source_image is not None
+        alignment_stats = {
+            "gpu": 0,
+            "cpu": 0,
+            "fallback": 0,
+            "aligned": 0,
+            "samples": 0,
+            "candidates": 0,
+            "devices": set(),
+        }
 
         for index, tile in enumerate(tiles_info):
             tile_pil = _ttp_image_tensor_to_pil(tile_images[index])
@@ -3457,7 +3616,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
             region = np.array(paste_region).astype(np.float32) / 255.0
             if str(pixel_alignment) != "off":
                 reference = canvas / np.maximum(weights, 1e-6)
-                dx, dy = _ttp_find_pixel_alignment_offset(
+                dx, dy, align_info = _ttp_find_pixel_alignment_offset_auto(
                     region,
                     reference,
                     weights,
@@ -3466,7 +3625,20 @@ class TTP_Smart_Tile_Assemble_Experimental:
                     coverage_mask,
                     int(pixel_alignment_radius),
                     str(pixel_alignment),
+                    str(pixel_alignment_device),
                 )
+                align_device = str(align_info.get("device", "cpu"))
+                if align_device.startswith("cuda") or align_device.startswith("mps") or align_device not in ("cpu", "off"):
+                    alignment_stats["gpu"] += 1
+                    alignment_stats["devices"].add(align_device)
+                elif align_device == "cpu":
+                    alignment_stats["cpu"] += 1
+                if bool(align_info.get("fallback", False)):
+                    alignment_stats["fallback"] += 1
+                alignment_stats["samples"] = max(alignment_stats["samples"], int(align_info.get("samples", 0) or 0))
+                alignment_stats["candidates"] = max(alignment_stats["candidates"], int(align_info.get("candidates", 0) or 0))
+                if dx or dy:
+                    alignment_stats["aligned"] += 1
                 out_x += dx
                 out_y += dy
             paste_x = max(0, out_x)
@@ -3507,6 +3679,17 @@ class TTP_Smart_Tile_Assemble_Experimental:
             else:
                 canvas[paste_y:y_end, paste_x:x_end] += region * mask
                 weights[paste_y:y_end, paste_x:x_end] += mask
+
+        if str(pixel_alignment) != "off":
+            devices = ",".join(sorted(alignment_stats["devices"])) or ("cpu" if alignment_stats["cpu"] else "none")
+            print(
+                "[TTP Smart Tile] pixel alignment "
+                f"mode={pixel_alignment} requested_device={pixel_alignment_device} "
+                f"actual_gpu_tiles={alignment_stats['gpu']} actual_cpu_tiles={alignment_stats['cpu']} "
+                f"fallback_tiles={alignment_stats['fallback']} moved_tiles={alignment_stats['aligned']} "
+                f"radius={int(pixel_alignment_radius)} max_samples={alignment_stats['samples']} "
+                f"candidates={alignment_stats['candidates']} devices={devices}"
+            )
 
         safe_weights = np.maximum(weights, 1e-6)
         output = canvas / safe_weights

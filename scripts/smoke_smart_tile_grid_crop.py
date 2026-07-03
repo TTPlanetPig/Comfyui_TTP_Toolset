@@ -119,6 +119,7 @@ assert_equal("edge_crop_px" in assemble_inputs["required"], True, "assemble shou
 assert_equal("mask_blend_mode" in assemble_inputs["required"], True, "assemble should expose object mask blending")
 assert_equal("pixel_alignment" in assemble_inputs["required"], True, "assemble should expose pixel alignment")
 assert_equal("pixel_alignment_radius" in assemble_inputs["required"], True, "assemble should expose pixel alignment radius")
+assert_equal(assemble_inputs["required"]["pixel_alignment_device"][0], ["auto", "cpu", "gpu"], "assemble should expose CPU/GPU pixel alignment selection")
 preview_inputs = ttp.TTP_Smart_Tile_Set_Preview_Experimental.INPUT_TYPES()
 assert_equal(preview_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "tile set preview should accept Smart Tile Set")
 assert_equal(
@@ -952,6 +953,19 @@ dx, dy = ttp._ttp_find_pixel_alignment_offset(
     mode="mask_edge_match",
 )
 assert_equal((dx, dy), (2, 1), "pixel alignment should find the best local offset from surrounding pixels")
+auto_dx, auto_dy, auto_info = ttp._ttp_find_pixel_alignment_offset_auto(
+    shifted_region,
+    reference,
+    alignment_weights,
+    4,
+    4,
+    alignment_mask,
+    radius=4,
+    mode="mask_edge_match",
+    device_mode="cpu",
+)
+assert_equal((auto_dx, auto_dy), (2, 1), "pixel alignment auto wrapper should preserve the CPU result when forced to CPU")
+assert_equal(auto_info["device"], "cpu", "pixel alignment info should report forced CPU execution")
 
 fallback_layout = ttp._ttp_boxes_to_auto_layout([], 900, 600, max_tiles=4, include_background=False)
 fallback_meta = ttp._ttp_parse_smart_tile_layout(fallback_layout, 900, 600)
