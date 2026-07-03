@@ -226,6 +226,9 @@ assert_equal(
 )
 upscale_inputs = ttp.TTP_Smart_Tile_Image_Upscale_Prep_Experimental.INPUT_TYPES()
 assert_equal(upscale_inputs["required"]["image"][0], "IMAGE", "upscale prep should accept one tile image")
+assert_equal("max_megapixels" in upscale_inputs["required"], True, "upscale prep should expose a megapixel cap")
+assert_equal("use_upscale_model" in upscale_inputs["required"], True, "upscale prep should allow disabling a connected upscale model")
+assert_equal(upscale_inputs["optional"]["upscale_model"][0], "UPSCALE_MODEL", "upscale prep should accept ComfyUI upscale models")
 assert_equal(
     ttp.NODE_CLASS_MAPPINGS["TTP_Smart_Tile_Image_Upscale_Prep_Experimental"],
     ttp.TTP_Smart_Tile_Image_Upscale_Prep_Experimental,
@@ -672,6 +675,16 @@ upscale_node = ttp.TTP_Smart_Tile_Image_Upscale_Prep_Experimental()
 upscaled_tile, upscale_info = upscale_node.upscale_tile(loop_image, scale=1.5, round_to=16)
 assert_equal(list(upscaled_tile.shape[1:3]), [400, 560], "upscale prep should scale and round tile dimensions")
 assert_equal("368x264 -> 560x400" in upscale_info, True, "upscale prep should report size changes")
+capped_tile, capped_info = upscale_node.upscale_tile(
+    ttp.pil2tensor(Image.new("RGB", (100, 100), "white")),
+    scale=4.0,
+    round_to=16,
+    max_megapixels=0.04,
+    use_upscale_model=False,
+)
+assert_equal(list(capped_tile.shape[1:3]), [192, 192], "upscale prep should round down under the megapixel cap")
+assert_equal(capped_tile.shape[1] * capped_tile.shape[2] <= 40000, True, "upscale prep should stay under max megapixels after rounding")
+assert_equal("max_megapixels=0.04 capped" in capped_info, True, "upscale prep should report megapixel capping")
 aligned = ttp._ttp_align_pil_to_aspect(Image.new("RGB", (561, 401), "white"), 560, 400, "center_crop")
 assert_equal(aligned.size, (560, 400), "assemble alignment should crop/resize drifted sampler output")
 resized = ttp._ttp_align_pil_to_aspect(Image.new("RGB", (500, 500), "white"), 560, 400, "resize")

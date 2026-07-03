@@ -2,6 +2,7 @@ import json
 import os
 import base64
 import hashlib
+import math
 import re
 import cv2
 import numpy as np
@@ -1402,8 +1403,10 @@ def _ttp_first_image_tensor(image_tensor):
 def _ttp_resize_pil_to_round(image, scale=2.0, round_to=8, resampling="lanczos"):
     filters = {
         "nearest": Image.Resampling.NEAREST,
+        "nearest-exact": Image.Resampling.NEAREST,
         "bilinear": Image.Resampling.BILINEAR,
         "bicubic": Image.Resampling.BICUBIC,
+        "area": Image.Resampling.BOX,
         "lanczos": Image.Resampling.LANCZOS,
     }
     target_width = max(1, int(round(image.width * float(scale))))
@@ -1412,6 +1415,120 @@ def _ttp_resize_pil_to_round(image, scale=2.0, round_to=8, resampling="lanczos")
     target_width = max(round_to, _ttp_round_to(target_width, round_to))
     target_height = max(round_to, _ttp_round_to(target_height, round_to))
     return image.resize((target_width, target_height), filters.get(str(resampling), Image.Resampling.LANCZOS))
+
+
+def _ttp_resize_pil_to_size(image, width, height, resampling="lanczos"):
+    filters = {
+        "nearest": Image.Resampling.NEAREST,
+        "nearest-exact": Image.Resampling.NEAREST,
+        "bilinear": Image.Resampling.BILINEAR,
+        "bicubic": Image.Resampling.BICUBIC,
+        "area": Image.Resampling.BOX,
+        "lanczos": Image.Resampling.LANCZOS,
+    }
+    return image.resize((max(1, int(width)), max(1, int(height))), filters.get(str(resampling), Image.Resampling.LANCZOS))
+
+
+def _ttp_round_down_to(value, multiple):
+    multiple = max(1, int(multiple))
+    value = max(1, int(math.floor(float(value))))
+    if multiple <= 1:
+        return value
+    rounded = int(math.floor(value / multiple) * multiple)
+    return max(multiple, rounded)
+
+
+def _ttp_smart_upscale_target_size(width, height, scale=2.0, round_to=8, max_megapixels=0.0):
+    width = max(1, int(width))
+    height = max(1, int(height))
+    scale = max(0.01, float(scale))
+    round_to = max(1, int(round_to))
+    max_pixels = int(float(max_megapixels) * 1000000.0) if float(max_megapixels or 0.0) > 0 else 0
+    desired_width = max(1, int(round(width * scale)))
+    desired_height = max(1, int(round(height * scale)))
+    capped = False
+    if max_pixels > 0 and desired_width * desired_height > max_pixels:
+        capped = True
+        scale = math.sqrt(max_pixels / max(1.0, float(width) * float(height)))
+        target_width = _ttp_round_down_to(width * scale, round_to)
+        target_height = _ttp_round_down_to(height * scale, round_to)
+        while target_width * target_height > max_pixels and (target_width > 1 or target_height > 1):
+            if target_width / max(1, width) >= target_height / max(1, height) and target_width > 1:
+                target_width = max(1, target_width - round_to)
+            elif target_height > 1:
+                target_height = max(1, target_height - round_to)
+            else:
+                target_width = max(1, target_width - round_to)
+        return max(1, target_width), max(1, target_height), capped
+    return max(round_to, _ttp_round_to(desired_width, round_to)), max(round_to, _ttp_round_to(desired_height, round_to)), capped
+
+
+def _ttp_resize_image_tensor(image, width, height, method="lanczos"):
+    if not hasattr(image, "movedim") or not hasattr(comfy.utils, "common_upscale"):
+        pil = _ttp_image_tensor_to_pil(_ttp_first_image_tensor(image))
+        return pil2tensor(_ttp_resize_pil_to_size(pil, int(width), int(height), method))
+    method = str(method or "lanczos")
+    method_map = {
+        "nearest": "nearest-exact",
+        "nearest-exact": "nearest-exact",
+        "bilinear": "bilinear",
+        "bicubic": "bicubic",
+        "area": "area",
+        "lanczos": "lanczos",
+    }
+    image = _ttp_first_image_tensor(image)
+    samples = image.movedim(-1, 1)
+    resized = comfy.utils.common_upscale(samples, int(width), int(height), method_map.get(method, "lanczos"), "disabled")
+    return torch.clamp(resized.movedim(1, -1), min=0.0, max=1.0).to(dtype=image.dtype)
+
+
+def _ttp_upscale_image_with_model(upscale_model, image):
+    if upscale_model is None:
+        return image
+    device = comfy.model_management.get_torch_device()
+    upscale_amount = max(float(getattr(upscale_model, "scale", 1.0) or 1.0), 1.0)
+    memory_required = comfy.model_management.module_size(upscale_model.model)
+    memory_required += (512 * 512 * 3) * image.element_size() * upscale_amount * 384.0
+    memory_required += image.nelement() * image.element_size()
+    comfy.model_management.free_memory(memory_required, device)
+
+    upscale_model.to(device)
+    in_img = image.movedim(-1, -3).to(device)
+    tile = 512
+    overlap = 32
+    output_device = comfy.model_management.intermediate_device()
+    try:
+        while True:
+            try:
+                steps = in_img.shape[0] * comfy.utils.get_tiled_scale_steps(
+                    in_img.shape[3],
+                    in_img.shape[2],
+                    tile_x=tile,
+                    tile_y=tile,
+                    overlap=overlap,
+                )
+                pbar = comfy.utils.ProgressBar(steps)
+                scaled = comfy.utils.tiled_scale(
+                    in_img,
+                    lambda a: upscale_model(a.float()),
+                    tile_x=tile,
+                    tile_y=tile,
+                    overlap=overlap,
+                    upscale_amount=upscale_amount,
+                    pbar=pbar,
+                    output_device=output_device,
+                )
+                break
+            except Exception as exc:
+                comfy.model_management.raise_non_oom(exc)
+                tile //= 2
+                if tile < 128:
+                    raise exc
+    finally:
+        upscale_model.to("cpu")
+
+    scaled = torch.clamp(scaled.movedim(-3, -1), min=0.0, max=1.0)
+    return scaled.to(device=comfy.model_management.intermediate_device(), dtype=comfy.model_management.intermediate_dtype())
 
 
 def _ttp_align_pil_to_aspect(image, expected_width, expected_height, mode="center_crop"):
@@ -3499,8 +3616,13 @@ class TTP_Smart_Tile_Image_Upscale_Prep_Experimental:
                 "image": ("IMAGE",),
                 "scale": ("FLOAT", {"default": 2.0, "min": 0.1, "max": 16.0, "step": 0.05}),
                 "round_to": ("INT", {"default": 8, "min": 1, "max": 256, "step": 1}),
-                "resampling": (["lanczos", "bicubic", "bilinear", "nearest"], {"default": "lanczos"}),
-            }
+                "resampling": (["lanczos", "bicubic", "bilinear", "area", "nearest-exact", "nearest"], {"default": "lanczos"}),
+                "max_megapixels": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 64.0, "step": 0.05}),
+                "use_upscale_model": ("BOOLEAN", {"default": True}),
+            },
+            "optional": {
+                "upscale_model": ("UPSCALE_MODEL",),
+            },
         }
 
     RETURN_TYPES = ("IMAGE", "STRING")
@@ -3508,11 +3630,42 @@ class TTP_Smart_Tile_Image_Upscale_Prep_Experimental:
     FUNCTION = "upscale_tile"
     CATEGORY = "TTP/Smart Tile"
 
-    def upscale_tile(self, image, scale=2.0, round_to=8, resampling="lanczos"):
-        pil = _ttp_image_tensor_to_pil(_ttp_first_image_tensor(image))
-        upscaled = _ttp_resize_pil_to_round(pil, float(scale), int(round_to), str(resampling))
-        info = f"{pil.width}x{pil.height} -> {upscaled.width}x{upscaled.height} scale={float(scale):g} round_to={int(round_to)}"
-        return (pil2tensor(upscaled), info)
+    def upscale_tile(
+        self,
+        image,
+        scale=2.0,
+        round_to=8,
+        resampling="lanczos",
+        max_megapixels=0.0,
+        use_upscale_model=True,
+        upscale_model=None,
+    ):
+        tile = _ttp_first_image_tensor(image)
+        width, height = _ttp_image_tensor_size(tile[0])
+        target_width, target_height, capped = _ttp_smart_upscale_target_size(
+            width,
+            height,
+            float(scale),
+            int(round_to),
+            float(max_megapixels),
+        )
+        model_used = bool(use_upscale_model and upscale_model is not None)
+        if model_used:
+            upscaled = _ttp_upscale_image_with_model(upscale_model, tile)
+            if _ttp_image_tensor_size(upscaled[0]) != (target_width, target_height):
+                upscaled = _ttp_resize_image_tensor(upscaled, target_width, target_height, str(resampling))
+        else:
+            upscaled = _ttp_resize_image_tensor(tile, target_width, target_height, str(resampling))
+        effective_scale_x = target_width / max(1, width)
+        effective_scale_y = target_height / max(1, height)
+        cap_text = " capped" if capped else ""
+        model_text = "model" if model_used else str(resampling)
+        info = (
+            f"{width}x{height} -> {target_width}x{target_height} "
+            f"requested_scale={float(scale):g} effective_scale={effective_scale_x:.4g}x{effective_scale_y:.4g} "
+            f"round_to={int(round_to)} max_megapixels={float(max_megapixels):g}{cap_text} method={model_text}"
+        )
+        return (upscaled, info)
 
 
 class TTP_Smart_Tile_Assemble_Experimental:
