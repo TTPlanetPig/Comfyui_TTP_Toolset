@@ -154,6 +154,7 @@ assert_equal(assemble_inputs["required"]["pixel_alignment_device"][0], ["auto", 
 assert_equal(assemble_inputs["required"]["assemble_device"][0], ["auto", "cpu", "gpu"], "assemble should expose CPU/GPU paste selection")
 assert_equal(assemble_inputs["required"]["assemble_mode"][0], ["final_only", "always"], "assemble should expose final-only mode first")
 assert_equal(assemble_inputs["required"]["assemble_mode"][1]["default"], "final_only", "assemble should default to final-only loop compositing")
+assert_equal(assemble_inputs["required"]["base_canvas_mode"][0], ["auto", "black", "base_image", "source_image"], "assemble should expose base canvas source selection")
 assert_equal(assemble_inputs["optional"]["done"][0], "BOOLEAN", "assemble should accept loop done gate")
 preview_inputs = ttp.TTP_Smart_Tile_Set_Preview_Experimental.INPUT_TYPES()
 assert_equal(preview_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "tile set preview should accept Smart Tile Set")
@@ -915,6 +916,32 @@ color_matched, _color_weights = assemble_node.assemble_tiles(
 )
 matched_pixel = color_matched.array[0, 4, 4]
 assert_equal(float(matched_pixel[0]) > float(matched_pixel[2]), True, "local mean/std color correction should match tile color toward the local reference")
+
+black_canvas, _black_canvas_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    mask_blend_mode="mask_only",
+    base_canvas_mode="black",
+    tile_set=blue_tile_set,
+    base_image=red_reference,
+)
+black_canvas_pixel = black_canvas.array[0, 4, 4]
+assert_equal(float(black_canvas_pixel[2]) > float(black_canvas_pixel[0]), True, "black canvas mode should not mix the connected base image into semi-transparent tiles")
+
+black_canvas_color_matched, _black_canvas_color_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    color_correction="local_mean_std",
+    color_strength=1.0,
+    mask_blend_mode="mask_only",
+    base_canvas_mode="black",
+    tile_set=blue_tile_set,
+    base_image=red_reference,
+)
+black_canvas_color_pixel = black_canvas_color_matched.array[0, 4, 4]
+assert_equal(float(black_canvas_color_pixel[0]) > float(black_canvas_color_pixel[2]), True, "black canvas mode should still allow base_image color reference")
 
 deferred_output, deferred_weights = assemble_node.assemble_tiles(
     blend_multiplier=1.0,

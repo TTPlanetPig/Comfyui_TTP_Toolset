@@ -3537,6 +3537,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 "context_tile_weight": ("FLOAT", {"default": 0.25, "min": 0.0, "max": 1.0, "step": 0.05}),
                 "assemble_device": (["auto", "cpu", "gpu"], {"default": "auto"}),
                 "assemble_mode": (["final_only", "always"], {"default": "final_only"}),
+                "base_canvas_mode": (["auto", "black", "base_image", "source_image"], {"default": "auto"}),
             },
             "optional": {
                 "sampled_tiles": ("IMAGE",),
@@ -3573,6 +3574,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
         context_tile_weight=0.25,
         assemble_device="auto",
         assemble_mode="final_only",
+        base_canvas_mode="auto",
         sampled_tiles=None,
         tile_meta=None,
         tile_set=None,
@@ -3606,14 +3608,32 @@ class TTP_Smart_Tile_Assemble_Experimental:
         if requested_assemble_mode == "always" and str(pixel_alignment) != "off" and done is not None:
             effective_assemble_mode = "final_only"
 
+        canvas_mode = str(base_canvas_mode or "auto")
+        if canvas_mode == "base_image":
+            base_source_image = base_image
+        elif canvas_mode == "source_image":
+            base_source_image = source_image
+        elif canvas_mode == "black":
+            base_source_image = None
+        else:
+            canvas_mode = "auto"
+            base_source_image = base_image if base_image is not None else source_image
+
         if effective_assemble_mode == "final_only" and done is not None and not bool(done):
-            return _ttp_assemble_placeholder_output(tile_images, base_image=base_image, source_image=source_image)
+            return _ttp_assemble_placeholder_output(tile_images, base_image=base_source_image)
 
         original_width, original_height = tile_meta["original_size"]
         if output_scale <= 0:
             inferred_scales = []
-            if base_image is not None:
-                base_width, base_height = _ttp_image_tensor_size(base_image[0])
+            scale_source_image = None
+            if canvas_mode == "base_image":
+                scale_source_image = base_image
+            elif canvas_mode == "source_image":
+                scale_source_image = source_image
+            elif canvas_mode == "auto" and base_image is not None:
+                scale_source_image = base_image
+            if scale_source_image is not None:
+                base_width, base_height = _ttp_image_tensor_size(scale_source_image[0])
                 inferred_scales.append(float(base_width) / max(1, original_width))
                 inferred_scales.append(float(base_height) / max(1, original_height))
             else:
@@ -3641,7 +3661,6 @@ class TTP_Smart_Tile_Assemble_Experimental:
             assemble_fallback_reason = "gpu_unavailable"
         use_gpu_assemble = assemble_torch_device is not None
 
-        base_source_image = base_image if base_image is not None else source_image
         if base_source_image is not None:
             base_pil = tensor2pil(base_source_image[0].unsqueeze(0)).convert("RGB")
             if base_pil.size != (output_width, output_height):
@@ -3679,8 +3698,8 @@ class TTP_Smart_Tile_Assemble_Experimental:
             color_reference_pil = tensor2pil(color_reference_image[0].unsqueeze(0)).convert("RGB")
         elif source_image is not None:
             color_reference_pil = tensor2pil(source_image[0].unsqueeze(0)).convert("RGB")
-        elif base_source_image is not None:
-            color_reference_pil = tensor2pil(base_source_image[0].unsqueeze(0)).convert("RGB")
+        elif base_image is not None:
+            color_reference_pil = tensor2pil(base_image[0].unsqueeze(0)).convert("RGB")
         if color_correction != "off" and color_reference_pil is None:
             raise ValueError("color_correction requires source_image, color_reference_image, or base_image as a reference.")
 
