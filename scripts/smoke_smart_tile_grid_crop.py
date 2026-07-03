@@ -6,7 +6,7 @@ import sys
 import types
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -156,6 +156,8 @@ assert_equal(assemble_inputs["required"]["assemble_mode"][0], ["final_only", "al
 assert_equal(assemble_inputs["required"]["assemble_mode"][1]["default"], "final_only", "assemble should default to final-only loop compositing")
 assert_equal(assemble_inputs["required"]["base_canvas_mode"][0], ["auto", "black", "base_image", "source_image"], "assemble should expose base canvas source selection")
 assert_equal("small_tile_on_top" in assemble_inputs["required"], True, "assemble should expose small tile top stacking")
+assert_equal(assemble_inputs["required"]["auto_composite_policy"][0], ["safe_auto", "strict_layer", "soft_detail", "replace_object"], "assemble should expose automatic compositing policy")
+assert_equal(assemble_inputs["required"]["auto_composite_policy"][1]["default"], "safe_auto", "assemble should default to safe auto compositing")
 assert_equal(assemble_inputs["optional"]["done"][0], "BOOLEAN", "assemble should accept loop done gate")
 preview_inputs = ttp.TTP_Smart_Tile_Set_Preview_Experimental.INPUT_TYPES()
 assert_equal(preview_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "tile set preview should accept Smart Tile Set")
@@ -1004,6 +1006,7 @@ large_above, _large_above_weights = assemble_node.assemble_tiles(
     output_scale=1.0,
     use_priority=True,
     base_canvas_mode="black",
+    auto_composite_policy="strict_layer",
     tile_set=stack_tile_set,
 )
 large_above_pixel = large_above.array[0, 4, 4]
@@ -1014,6 +1017,7 @@ small_above, _small_above_weights = assemble_node.assemble_tiles(
     use_priority=True,
     base_canvas_mode="black",
     small_tile_on_top=True,
+    auto_composite_policy="strict_layer",
     tile_set=stack_tile_set,
 )
 small_above_pixel = small_above.array[0, 4, 4]
@@ -1073,6 +1077,78 @@ feather_edge_pixel = feathered_stack.array[0, 4, 8]
 feather_center_pixel = feathered_stack.array[0, 8, 8]
 assert_equal(float(feather_edge_pixel[0]) > float(feather_edge_pixel[2]), True, "focus tile fallback feather should keep lower pixels visible at the rectangle edge")
 assert_equal(float(feather_center_pixel[2]) > float(feather_center_pixel[0]), True, "focus tile fallback feather should keep the focus tile strong in the center")
+
+eye_mask_full = Image.new("L", (16, 16), 0)
+eye_mask_tile = Image.new("L", (8, 8), 128)
+ImageDraw.Draw(eye_mask_tile).rectangle((2, 2, 5, 5), fill=255)
+eye_mask_full.paste(eye_mask_tile, (4, 4))
+eye_mask_data = ttp._ttp_encode_object_mask_data([eye_mask_full], [0], [4, 4, 12, 12])
+eye_stack_meta = {
+    "type": "ttp_smart_tile",
+    "original_size": [16, 16],
+    "tiles": [
+        {
+            "name": "face_base",
+            "label": "face",
+            "core_box": [0, 0, 16, 16],
+            "sample_box": [0, 0, 16, 16],
+            "tile_canvas_size": [16, 16],
+            "tile_canvas_box": [0, 0, 16, 16],
+            "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+            "blend": 0,
+            "importance": 1.0,
+            "priority": 0.0,
+            "layer": 1,
+            "occlusion_priority": 100,
+        },
+        {
+            "name": "eyes_detail",
+            "label": "eyes glasses",
+            "core_box": [4, 4, 8, 8],
+            "sample_box": [4, 4, 8, 8],
+            "tile_canvas_size": [8, 8],
+            "tile_canvas_box": [0, 0, 8, 8],
+            "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+            "blend": 0,
+            "importance": 1.0,
+            "priority": 0.0,
+            "layer": 4,
+            "occlusion_priority": 2000,
+            "object_mask": eye_mask_data,
+        },
+    ],
+}
+eye_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "tile_meta": eye_stack_meta,
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (16, 16), (220, 20, 20)))[0],
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (20, 20, 220)))[0],
+    ],
+}
+strict_eye, _strict_eye_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    mask_blend_mode="mask_feather",
+    auto_composite_policy="strict_layer",
+    tile_set=eye_tile_set,
+)
+safe_eye, _safe_eye_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    mask_blend_mode="mask_feather",
+    auto_composite_policy="safe_auto",
+    tile_set=eye_tile_set,
+)
+strict_eye_edge = strict_eye.array[0, 4, 8]
+safe_eye_edge = safe_eye.array[0, 4, 8]
+safe_eye_center = safe_eye.array[0, 8, 8]
+assert_equal(float(safe_eye_edge[0]) > float(strict_eye_edge[0]), True, "safe auto detail overlay should preserve more face color at eye mask edges")
+assert_equal(float(safe_eye_center[2]) > float(safe_eye_center[0]), True, "safe auto detail overlay should keep eye details stronger at the mask center")
 
 deferred_output, deferred_weights = assemble_node.assemble_tiles(
     blend_multiplier=1.0,

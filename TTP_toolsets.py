@@ -786,6 +786,60 @@ def _ttp_rect_feather_mask(width, height, feather):
     return _ttp_create_feather_mask(int(width), int(height), feather)
 
 
+def _ttp_tile_search_text(tile):
+    label = str(tile.get("label", "") or "").lower()
+    name = str(tile.get("name", "") or "").lower()
+    source = str(tile.get("source", "") or "").lower()
+    return " ".join((label, name, source))
+
+
+def _ttp_is_context_tile_text(text):
+    return any(word in str(text or "") for word in ("background", "context", "full image", "full_image", "large context"))
+
+
+def _ttp_is_detail_tile_text(text):
+    detail_keywords = (
+        "face", "head", "eye", "eyes", "eyelash", "eyebrow", "glasses",
+        "mouth", "lip", "lips", "teeth", "nose", "ear", "ears",
+        "hand", "hands", "finger", "fingers", "text", "letter", "logo",
+        "jewelry", "ornament", "detail", "focus",
+    )
+    return any(keyword in str(text or "") for keyword in detail_keywords)
+
+
+def _ttp_should_soft_overlay_tile(tile, policy, is_large_tile, tile_area_ratio, large_tile_area_threshold):
+    policy = str(policy or "safe_auto")
+    if policy in ("strict_layer", "replace_object") or is_large_tile:
+        return False
+    text = _ttp_tile_search_text(tile)
+    if _ttp_is_context_tile_text(text):
+        return False
+    if policy == "soft_detail":
+        return True
+    if policy != "safe_auto":
+        return False
+    if _ttp_is_detail_tile_text(text):
+        return True
+    small_threshold = max(0.02, min(0.18, float(large_tile_area_threshold) * 0.35))
+    has_rank = float(tile.get("occlusion_priority", 0.0)) > 0.0 or float(tile.get("layer", 0.0)) > 0.0
+    return has_rank and float(tile_area_ratio) <= small_threshold
+
+
+def _ttp_soften_detail_mask_array(mask, grow_px=1, blur_px=1.0):
+    if mask is None:
+        return None
+    array = np.clip(np.asarray(mask[:, :, 0] if getattr(mask, "ndim", 0) == 3 else mask, dtype=np.float32), 0.0, 1.0)
+    pil = Image.fromarray((array * 255.0).astype(np.uint8), mode="L")
+    grow_px = max(0, int(round(float(grow_px))))
+    if grow_px > 0:
+        pil = pil.filter(ImageFilter.MaxFilter(grow_px * 2 + 1))
+    blur_px = max(0.0, float(blur_px))
+    if blur_px > 0:
+        pil = pil.filter(ImageFilter.GaussianBlur(radius=blur_px))
+    softened = np.array(pil).astype(np.float32) / 255.0
+    return softened[:, :, None]
+
+
 def _ttp_decode_interactive_paint_mask(mask_payload, image_width, image_height):
     try:
         payload = json.loads(str(mask_payload or "").strip() or "{}")
@@ -3729,6 +3783,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 "assemble_mode": (["final_only", "always"], {"default": "final_only"}),
                 "base_canvas_mode": (["auto", "black", "base_image", "source_image"], {"default": "auto"}),
                 "small_tile_on_top": ("BOOLEAN", {"default": False}),
+                "auto_composite_policy": (["safe_auto", "strict_layer", "soft_detail", "replace_object"], {"default": "safe_auto"}),
             },
             "optional": {
                 "sampled_tiles": ("IMAGE",),
@@ -3767,6 +3822,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
         assemble_mode="final_only",
         base_canvas_mode="auto",
         small_tile_on_top=False,
+        auto_composite_policy="safe_auto",
         sampled_tiles=None,
         tile_meta=None,
         tile_set=None,
@@ -3873,7 +3929,20 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 weights = np.zeros((output_height, output_width, 1), dtype=np.float32)
 
         small_tile_on_top = bool(small_tile_on_top)
-        use_occlusion = small_tile_on_top or any(
+        composite_policy = str(auto_composite_policy or "safe_auto")
+        if composite_policy not in ("safe_auto", "strict_layer", "soft_detail", "replace_object"):
+            composite_policy = "safe_auto"
+        auto_policy_ranking = composite_policy in ("safe_auto", "soft_detail", "replace_object")
+        auto_policy_candidates = auto_policy_ranking and any(
+            not _ttp_is_context_tile_text(_ttp_tile_search_text(tile)) and (
+                _ttp_is_detail_tile_text(_ttp_tile_search_text(tile))
+                or bool(tile.get("object_mask"))
+                or float(tile.get("occlusion_priority", 0.0)) != 0.0
+                or int(tile.get("layer", 0)) != 0
+            )
+            for tile in tiles_info
+        )
+        use_occlusion = small_tile_on_top or auto_policy_candidates or any(
             float(tile.get("occlusion_priority", 0.0)) != 0.0 or int(tile.get("layer", 0)) != 0
             for tile in tiles_info
         )
@@ -3939,6 +4008,13 @@ class TTP_Smart_Tile_Assemble_Experimental:
             tile_label = str(tile.get("label", tile.get("source", ""))).lower()
             is_context_label = any(word in tile_label for word in ("background", "context", "full image", "full_image", "large context"))
             is_large_tile = tile_area_ratio >= large_tile_area_threshold or is_context_label
+            soft_detail_overlay = _ttp_should_soft_overlay_tile(
+                tile,
+                composite_policy,
+                is_large_tile,
+                tile_area_ratio,
+                large_tile_area_threshold,
+            )
             low_resolution_large_tile = (
                 has_base_canvas
                 and is_large_tile
@@ -3990,6 +4066,9 @@ class TTP_Smart_Tile_Assemble_Experimental:
             )
             object_mask = _ttp_tile_object_mask_array(tile, out_w, out_h, str(mask_blend_mode), blend)
             if object_mask is not None:
+                if soft_detail_overlay and str(mask_blend_mode) in ("auto", "mask_feather", "mask_only"):
+                    blur_px = max(1.0, min(8.0, max(float(blend) * 0.08, min(out_w, out_h) * 0.012)))
+                    object_mask = _ttp_soften_detail_mask_array(object_mask, grow_px=0, blur_px=blur_px)
                 if str(mask_blend_mode) == "mask_only":
                     mask = object_mask
                 else:
@@ -4004,12 +4083,20 @@ class TTP_Smart_Tile_Assemble_Experimental:
             rank_occlusion = float(tile.get("occlusion_priority", 0.0))
             rank_layer = float(tile.get("layer", 0.0))
             rank_priority = priority
+            if auto_policy_ranking and not is_large_tile:
+                text = _ttp_tile_search_text(tile)
+                if _ttp_is_detail_tile_text(text) or soft_detail_overlay:
+                    auto_detail_rank = 12000.0 + (1.0 - _ttp_clamp(tile_area_ratio, 0.0, 1.0)) * 9000.0
+                    rank_occlusion = max(rank_occlusion, auto_detail_rank)
+                    rank_layer = max(rank_layer, 2.0)
             if small_tile_on_top and not is_large_tile:
                 small_tile_rank = 10000.0 + (1.0 - _ttp_clamp(tile_area_ratio, 0.0, 1.0)) * 9000.0
                 if any(keyword in tile_label for keyword in focus_label_keywords):
                     small_tile_rank += 1000.0
                 rank_occlusion = max(rank_occlusion, small_tile_rank)
                 rank_layer = max(rank_layer, 1.0)
+            if soft_detail_overlay:
+                mask = mask * (1.0 + coverage_mask * coverage_mask)
             if is_large_tile and large_tile_policy == "context_only" and has_base_canvas:
                 mask = mask * context_tile_weight
                 rank_occlusion = min(rank_occlusion, 0.0)
@@ -4134,11 +4221,15 @@ class TTP_Smart_Tile_Assemble_Experimental:
                     eligible = (rank >= rank_view - 1e-6) & mask_active
                     canvas_view = canvas[paste_y:y_end, paste_x:x_end]
                     weights_view = weights[paste_y:y_end, paste_x:x_end]
-                    higher_alpha = coverage_t * higher.to(dtype=torch.float32)
-                    keep = 1.0 - higher_alpha
-                    canvas_view.mul_(keep)
-                    weights_view.mul_(keep)
-                    rank_view[higher] = rank
+                    if soft_detail_overlay:
+                        protect = higher & (coverage_t >= 0.5)
+                        rank_view[protect] = rank
+                    else:
+                        higher_alpha = coverage_t * higher.to(dtype=torch.float32)
+                        keep = 1.0 - higher_alpha
+                        canvas_view.mul_(keep)
+                        weights_view.mul_(keep)
+                        rank_view[higher] = rank
                     eligible_f = eligible.to(dtype=torch.float32)
                     canvas_view.add_(region_t * mask_t * eligible_f)
                     weights_view.add_(mask_t * eligible_f)
@@ -4154,11 +4245,15 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 canvas_view = canvas[paste_y:y_end, paste_x:x_end]
                 weights_view = weights[paste_y:y_end, paste_x:x_end]
                 if np.any(higher):
-                    higher_alpha = coverage_mask * higher.astype(np.float32)
-                    keep = 1.0 - higher_alpha
-                    canvas_view *= keep
-                    weights_view *= keep
-                    rank_view[higher[:, :, 0], :] = rank
+                    if soft_detail_overlay:
+                        protect = higher & (coverage_mask >= 0.5)
+                        rank_view[protect[:, :, 0], :] = rank
+                    else:
+                        higher_alpha = coverage_mask * higher.astype(np.float32)
+                        keep = 1.0 - higher_alpha
+                        canvas_view *= keep
+                        weights_view *= keep
+                        rank_view[higher[:, :, 0], :] = rank
                 canvas_view += region * mask * eligible
                 weights_view += mask * eligible
             else:
