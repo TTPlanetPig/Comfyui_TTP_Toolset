@@ -749,6 +749,43 @@ def _ttp_tile_object_mask_array(tile, out_width, out_height, mask_blend_mode="ma
     return array[:, :, None]
 
 
+def _ttp_should_rect_feather_tile(tile, is_large_tile, mask_blend_mode):
+    if str(mask_blend_mode) not in ("auto", "mask_feather"):
+        return False
+    if is_large_tile or tile.get("object_mask"):
+        return False
+    label = str(tile.get("label", "") or "").lower()
+    name = str(tile.get("name", "") or "").lower()
+    source = str(tile.get("source", "") or "").lower()
+    text = " ".join((label, name, source))
+    if any(word in text for word in ("background", "context", "full image", "full_image", "large context")):
+        return False
+    focus_keywords = (
+        "face", "head", "eye", "eyes", "eyelash", "eyebrow", "glasses",
+        "hand", "hands", "finger", "fingers", "mouth", "lip", "lips",
+        "teeth", "nose", "ear", "ears", "text", "letter", "logo",
+        "detail", "focus", "foreground", "object",
+    )
+    if any(keyword in text for keyword in focus_keywords):
+        return True
+    if source in ("auto", "paint", "sam", "sam3", "sam3.1", "qwen", "qwenvl"):
+        return float(tile.get("occlusion_priority", 0.0)) >= 100.0 or float(tile.get("layer", 0.0)) >= 2.0
+    edges = tile.get("overlap_edges_px_source", {})
+    has_surrounding_overlap = all(float(edges.get(edge, 0.0)) > 0.0 for edge in ("left", "right", "top", "bottom"))
+    return has_surrounding_overlap and (
+        float(tile.get("occlusion_priority", 0.0)) > 0.0 or float(tile.get("layer", 0.0)) > 0.0
+    )
+
+
+def _ttp_rect_feather_mask(width, height, feather):
+    feather = int(round(float(feather)))
+    if feather <= 0:
+        return np.ones((height, width, 1), dtype=np.float32)
+    edge_limit = max(1, min(int(width), int(height)) // 3)
+    feather = max(1, min(feather, edge_limit))
+    return _ttp_create_feather_mask(int(width), int(height), feather)
+
+
 def _ttp_decode_interactive_paint_mask(mask_payload, image_width, image_height):
     try:
         payload = json.loads(str(mask_payload or "").strip() or "{}")
@@ -3957,6 +3994,8 @@ class TTP_Smart_Tile_Assemble_Experimental:
                     mask = object_mask
                 else:
                     mask = mask * object_mask
+            elif _ttp_should_rect_feather_tile(tile, is_large_tile, str(mask_blend_mode)):
+                mask = mask * _ttp_rect_feather_mask(out_w, out_h, blend)
             coverage_mask = np.clip(mask.copy(), 0.0, 1.0)
             importance = max(0.0, float(tile.get("importance", 1.0)))
             priority = max(0.0, float(tile.get("priority", 50.0)))

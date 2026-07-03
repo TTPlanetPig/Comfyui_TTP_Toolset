@@ -1019,6 +1019,61 @@ small_above, _small_above_weights = assemble_node.assemble_tiles(
 small_above_pixel = small_above.array[0, 4, 4]
 assert_equal(float(small_above_pixel[2]) > float(small_above_pixel[0]), True, "small_tile_on_top should stack smaller tiles above larger context tiles")
 
+feather_stack_meta = {
+    "type": "ttp_smart_tile",
+    "original_size": [16, 16],
+    "tiles": [
+        {
+            "name": "background",
+            "label": "background",
+            "core_box": [0, 0, 16, 16],
+            "sample_box": [0, 0, 16, 16],
+            "tile_canvas_size": [16, 16],
+            "tile_canvas_box": [0, 0, 16, 16],
+            "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+            "blend": 0,
+            "importance": 1.0,
+            "priority": 0.0,
+            "layer": 0,
+            "occlusion_priority": 0,
+        },
+        {
+            "name": "face_detail",
+            "label": "face detail",
+            "core_box": [4, 4, 8, 8],
+            "sample_box": [4, 4, 8, 8],
+            "tile_canvas_size": [8, 8],
+            "tile_canvas_box": [0, 0, 8, 8],
+            "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+            "blend": 4,
+            "importance": 1.0,
+            "priority": 0.0,
+            "layer": 2,
+            "occlusion_priority": 1000,
+        },
+    ],
+}
+feather_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "tile_meta": feather_stack_meta,
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (16, 16), (220, 20, 20)))[0],
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (20, 20, 220)))[0],
+    ],
+}
+feathered_stack, _feathered_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    mask_blend_mode="mask_feather",
+    tile_set=feather_tile_set,
+)
+feather_edge_pixel = feathered_stack.array[0, 4, 8]
+feather_center_pixel = feathered_stack.array[0, 8, 8]
+assert_equal(float(feather_edge_pixel[0]) > float(feather_edge_pixel[2]), True, "focus tile fallback feather should keep lower pixels visible at the rectangle edge")
+assert_equal(float(feather_center_pixel[2]) > float(feather_center_pixel[0]), True, "focus tile fallback feather should keep the focus tile strong in the center")
+
 deferred_output, deferred_weights = assemble_node.assemble_tiles(
     blend_multiplier=1.0,
     output_scale=1.0,
