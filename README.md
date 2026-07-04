@@ -45,6 +45,7 @@ Current workflow nodes:
 - `TTP Smart Tile Loop Source`: outputs one tile at a time for sampler/img2img processing.
 - `TTP Smart Tile Loop Collect`: collects processed tiles back into the tile set.
 - `TTP Smart Tile Image Upscale Prep`: optionally upscales one tile before sampling.
+- `TTP Smart Tile Output Size Estimate`: calculates final output scale and resolution from a processed tile set.
 - `TTP Smart Tile Assemble`: assembles processed tiles back into the final image with feathered blending, mask support, priority/layer handling, color correction, optional CPU/GPU pixel alignment, and optional GPU paste/weight accumulation.
 - `TTP Smart Tile Save Final Image`: saves only the final loop result and embeds workflow metadata.
 
@@ -56,6 +57,7 @@ TTP Smart Tile Interactive Crop
   -> TTP Smart Tile Loop Source
   -> VAE Encode / Sampler / VAE Decode
   -> TTP Smart Tile Loop Collect
+  -> TTP Smart Tile Output Size Estimate (optional)
   -> TTP Smart Tile Assemble
   -> TTP Smart Tile Save Final Image
 ```
@@ -63,6 +65,8 @@ TTP Smart Tile Interactive Crop
 By default, `TTP Smart Tile Assemble` uses `assemble_mode=final_only`. Connect `TTP Smart Tile Loop Collect.done` to `TTP Smart Tile Assemble.done` so loop runs return a lightweight preview while `done` is false, then perform the full assemble once after the last tile. Switch `assemble_mode` to `always` only when you want a full recomposite after every tile; if pixel alignment is enabled, unfinished loop runs are automatically treated as `final_only` to avoid repeated expensive alignment passes. `assemble_device` controls the paste/weight accumulation device (`auto`, `cpu`, or `gpu`), and pixel alignment can use the GPU canvas when GPU assemble is active. Use `base_canvas_mode=black` when you want connected source/base images to remain available as references without being pasted underneath the tiles. Enable `small_tile_on_top` when small detail tiles should automatically stack above larger body/background/context tiles in overlap areas. `auto_composite_policy=safe_auto` keeps background/context tiles low, promotes detected details, and blends face/eye/glasses/mouth-style detail masks as soft overlays instead of cutting holes in lower face tiles; use `strict_layer` to restore the raw metadata layer behavior. Official `Transfer Color` methods and PIL resize/crop handling remain on their existing paths for compatibility.
 
 `TTP Smart Tile Image Upscale Prep` prepares each loop tile before img2img sampling. It can use a connected ComfyUI `UPSCALE_MODEL` through the same tiled upscale-model path as the built-in upscale node, or fall back to `lanczos`, `bicubic`, `bilinear`, `area`, or nearest resize when no model is connected or `use_upscale_model` is off. `scale` sets the requested enlargement, `max_megapixels` caps the final tile pixel count, and `round_to` snaps the final width/height after the cap. When the cap is active, the node rounds down so the rounded tile stays under the megapixel budget. Tile coordinates are not changed; they remain in original-image space so assemble can map the processed tile back by `sample_box` and `output_scale`.
+
+`TTP Smart Tile Output Size Estimate` reads the processed `tile_set` after `Loop Collect` and reports `output_scale`, final `width`/`height`, separate `scale_x`/`scale_y`, and a per-tile info log. The default `median` strategy matches Assemble's automatic tile-scale inference, and the `output_scale` output can be connected directly to `TTP Smart Tile Assemble.output_scale`. Mixed tile scales are reported in the info string so capped or unevenly enlarged tiles are visible before final assembly.
 
 `TTP Smart Tile Interactive Crop` is the recommended starting point when you want to manually or automatically split a still image by visual regions. Its `image` input follows the official `Load Image` pattern, so uploads go to ComfyUI's input folder and the workflow stores the selected filename instead of embedding the whole image. The editor can generate a standard grid from column/row numbers, replace the full layout with that grid, subdivide the currently selected tile, add painted-mask tiles, and fill uncovered gaps. It stores the tile layout in a hidden widget so the workflow keeps the current plan.
 

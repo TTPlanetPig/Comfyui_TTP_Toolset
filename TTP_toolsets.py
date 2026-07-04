@@ -1622,6 +1622,86 @@ def _ttp_upscale_image_with_model(upscale_model, image):
     return scaled.to(device=comfy.model_management.intermediate_device(), dtype=comfy.model_management.intermediate_dtype())
 
 
+def _ttp_tile_effective_scale_values(tile_meta, tile_images):
+    if not isinstance(tile_meta, dict) or tile_meta.get("type") != "ttp_smart_tile":
+        raise ValueError("tile_meta must come from a Smart Tile node.")
+    tiles_info = tile_meta.get("tiles", [])
+    if tile_images is None:
+        raise ValueError("tile_images are required to estimate output scale from processed tiles.")
+    if len(tile_images) != len(tiles_info):
+        raise ValueError(f"tile images ({len(tile_images)}) do not match tile_meta tiles ({len(tiles_info)})")
+
+    scale_values = []
+    x_scales = []
+    y_scales = []
+    lines = []
+    for index, tile in enumerate(tiles_info):
+        _, _, sw, sh = tile["sample_box"]
+        canvas_width, canvas_height = tile.get("tile_canvas_size", [sw, sh])
+        canvas_box = tile.get("tile_canvas_box", [0, 0, sw, sh])
+        canvas_content_w = max(1, float(canvas_box[2]) - float(canvas_box[0]))
+        canvas_content_h = max(1, float(canvas_box[3]) - float(canvas_box[1]))
+        tile_width, tile_height = _ttp_image_tensor_size(tile_images[index])
+        content_width = float(tile_width) * (canvas_content_w / max(1, canvas_width))
+        content_height = float(tile_height) * (canvas_content_h / max(1, canvas_height))
+        scale_x = content_width / max(1, float(sw))
+        scale_y = content_height / max(1, float(sh))
+        x_scales.append(scale_x)
+        y_scales.append(scale_y)
+        scale_values.extend([scale_x, scale_y])
+        label = str(tile.get("label", tile.get("name", f"tile_{index}")) or f"tile_{index}")
+        lines.append(f"{index}:{label} {tile_width}x{tile_height} sample={int(sw)}x{int(sh)} scale={scale_x:.4g}x{scale_y:.4g}")
+    return scale_values, x_scales, y_scales, lines
+
+
+def _ttp_select_scale_value(values, strategy="median"):
+    if not values:
+        return 1.0
+    array = np.asarray(values, dtype=np.float32)
+    strategy = str(strategy or "median")
+    if strategy == "mean":
+        value = float(np.mean(array))
+    elif strategy == "min":
+        value = float(np.min(array))
+    elif strategy == "max":
+        value = float(np.max(array))
+    else:
+        value = float(np.median(array))
+    return max(0.01, value)
+
+
+def _ttp_estimate_smart_tile_output_size(tile_meta, tile_images, scale_strategy="median", source_image=None):
+    original_width, original_height = [int(value) for value in tile_meta.get("original_size", [0, 0])]
+    if source_image is not None:
+        source_width, source_height = _ttp_image_tensor_size(source_image[0])
+        if original_width <= 0 or original_height <= 0:
+            original_width, original_height = source_width, source_height
+    if original_width <= 0 or original_height <= 0:
+        raise ValueError("Smart Tile metadata is missing a valid original_size.")
+
+    scale_values, x_scales, y_scales, lines = _ttp_tile_effective_scale_values(tile_meta, tile_images)
+    output_scale = _ttp_select_scale_value(scale_values, scale_strategy)
+    output_width = max(1, int(round(original_width * output_scale)))
+    output_height = max(1, int(round(original_height * output_scale)))
+    scale_x = _ttp_select_scale_value(x_scales, scale_strategy)
+    scale_y = _ttp_select_scale_value(y_scales, scale_strategy)
+    min_scale = min(scale_values) if scale_values else output_scale
+    max_scale = max(scale_values) if scale_values else output_scale
+    spread = max_scale - min_scale
+    info = (
+        f"original={original_width}x{original_height} output={output_width}x{output_height} "
+        f"output_scale={output_scale:.6g} scale_x={scale_x:.6g} scale_y={scale_y:.6g} "
+        f"strategy={scale_strategy} tiles={len(tile_images)} min={min_scale:.6g} max={max_scale:.6g} spread={spread:.6g}"
+    )
+    if spread > 0.05:
+        info += " warning=mixed_tile_scales"
+    if lines:
+        info += "\n" + "\n".join(lines[:32])
+        if len(lines) > 32:
+            info += f"\n... {len(lines) - 32} more tile(s)"
+    return output_scale, output_width, output_height, scale_x, scale_y, info
+
+
 def _ttp_align_pil_to_aspect(image, expected_width, expected_height, mode="center_crop"):
     expected_width = max(1, int(expected_width))
     expected_height = max(1, int(expected_height))
@@ -3759,6 +3839,37 @@ class TTP_Smart_Tile_Image_Upscale_Prep_Experimental:
         return (upscaled, info)
 
 
+class TTP_Smart_Tile_Output_Size_Estimate_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "tile_set": ("TTP_SMART_TILE_SET",),
+                "scale_strategy": (["median", "mean", "min", "max"], {"default": "median"}),
+            },
+            "optional": {
+                "source_image": ("IMAGE",),
+            },
+        }
+
+    RETURN_TYPES = ("FLOAT", "INT", "INT", "FLOAT", "FLOAT", "STRING")
+    RETURN_NAMES = ("output_scale", "width", "height", "scale_x", "scale_y", "info")
+    FUNCTION = "estimate_output_size"
+    CATEGORY = "TTP/Smart Tile"
+
+    def estimate_output_size(self, tile_set, scale_strategy="median", source_image=None):
+        if not isinstance(tile_set, dict) or tile_set.get("type") != "ttp_smart_tile_set":
+            raise ValueError("tile_set must come from TTP Smart Tile Interactive Crop or Loop Collect.")
+        tile_meta = tile_set.get("tile_meta")
+        tile_images = tile_set.get("tile_images", [])
+        return _ttp_estimate_smart_tile_output_size(
+            tile_meta,
+            tile_images,
+            scale_strategy=str(scale_strategy),
+            source_image=source_image,
+        )
+
+
 class TTP_Smart_Tile_Assemble_Experimental:
     @classmethod
     def INPUT_TYPES(cls):
@@ -5209,6 +5320,7 @@ NODE_CLASS_MAPPINGS = {
     "TTP_Smart_Tile_Loop_Source_Experimental": TTP_Smart_Tile_Loop_Source_Experimental,
     "TTP_Smart_Tile_Loop_Collect_Experimental": TTP_Smart_Tile_Loop_Collect_Experimental,
     "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": TTP_Smart_Tile_Image_Upscale_Prep_Experimental,
+    "TTP_Smart_Tile_Output_Size_Estimate_Experimental": TTP_Smart_Tile_Output_Size_Estimate_Experimental,
     "TTP_Smart_Tile_Assemble_Experimental": TTP_Smart_Tile_Assemble_Experimental,
     "TTP_Smart_Tile_Save_Final_Image_Experimental": TTP_Smart_Tile_Save_Final_Image_Experimental,
 }
@@ -5232,6 +5344,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TTP_Smart_Tile_Loop_Source_Experimental": "TTP Smart Tile Loop Source",
     "TTP_Smart_Tile_Loop_Collect_Experimental": "TTP Smart Tile Loop Collect",
     "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": "TTP Smart Tile Image Upscale Prep",
+    "TTP_Smart_Tile_Output_Size_Estimate_Experimental": "TTP Smart Tile Output Size Estimate",
     "TTP_Smart_Tile_Assemble_Experimental": "TTP Smart Tile Assemble",
     "TTP_Smart_Tile_Save_Final_Image_Experimental": "TTP Smart Tile Save Final Image",
 }
