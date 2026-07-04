@@ -58,8 +58,10 @@ assert(/function editorStageSize/.test(source), "tile editor should compute a fi
 assert(!/aspect-ratio:/.test(source), "tile editor should not rely on CSS aspect-ratio when the node is resized");
 assert(!/max-height:720px/.test(source), "tile editor should not clamp only stage height and distort the image");
 assert(/"object_mask"/.test(source), "tile editor should preserve SAM object masks in layout metadata");
+assert(/"object_mask_source"/.test(source), "tile editor should preserve parent object masks for refresh");
 assert(/GRID_MASK_MODES/.test(source), "tile editor should expose grid mask inheritance modes");
 assert(/async function gridTilesWithInheritedMask/.test(source), "Grid in should be able to inherit and crop object masks");
+assert(/async function refreshInheritedMasks/.test(source), "tile editor should refresh inherited masks after manual edits");
 assert(/function cropObjectMaskForTile/.test(source), "Grid in should crop object masks per child tile");
 assert(/crop_mask_skip_empty/.test(source), "Grid in should allow skipping empty mask child tiles");
 assert(/createButton\(`Grid in T\$\{selectedIndex \+ 1\}`, async \(\) =>/.test(source), "Grid in should run asynchronously for mask cropping");
@@ -68,6 +70,8 @@ assert(/auto_paint_mask/.test(source), "tile editor should sync painted masks in
 assert(/Brush/.test(source), "tile editor should expose a paint brush action");
 assert(/Erase/.test(source), "tile editor should expose an erase action");
 assert(/Mask to Tile/.test(source), "tile editor should expose a button that commits painted masks into layout tiles");
+assert(/Refresh masks/.test(source), "tile editor should expose a refresh masks action");
+assert(/refreshInheritedMasks\(node, tiles, gridMaskMode\(node\)\)/.test(source), "Refresh masks should use the current grid mask mode");
 assert(/function addPaintMaskTiles/.test(source), "tile editor should convert painted masks into persisted tiles");
 assert(/source: "paint_mask"/.test(source), "paint-created tiles should be marked as paint mask tiles");
 assert(/object_mask:\s*\{/.test(source), "paint-created tiles should persist object masks in layout metadata");

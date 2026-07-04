@@ -11,9 +11,9 @@ const STORAGE_PREFIX = "ttp_smart_tile_interactive_layout";
 const GRID_MASK_MODES = ["off", "crop_mask", "crop_mask_skip_empty"];
 const TILE_METADATA_KEYS = [
     "name", "source", "label", "score", "layer", "object_id", "occlusion_priority",
-    "priority", "importance", "pad", "blend", "object_mask", "semantic_category",
-    "semantic_role", "semantic_score", "recommended_scale_weight", "recommended_layer",
-    "recommended_priority", "recommended_occlusion_priority", "recommended_composite_mode",
+    "priority", "importance", "pad", "blend", "object_mask", "object_mask_source",
+    "semantic_category", "semantic_role", "semantic_score", "recommended_scale_weight",
+    "recommended_layer", "recommended_priority", "recommended_occlusion_priority", "recommended_composite_mode",
 ];
 
 function widgetByName(node, name) {
@@ -180,6 +180,16 @@ function objectMaskPixelBox(maskData) {
     return { x0, y0, x1: x0 + width, y1: y0 + height, width, height };
 }
 
+function sourceObjectMaskData(tile) {
+    if (tile?.object_mask_source?.format === "png_base64" && tile.object_mask_source?.data) {
+        return tile.object_mask_source;
+    }
+    if (tile?.object_mask?.format === "png_base64" && tile.object_mask?.data) {
+        return tile.object_mask;
+    }
+    return null;
+}
+
 function loadObjectMaskImage(maskData) {
     return new Promise((resolve, reject) => {
         if (!maskData || maskData.format !== "png_base64" || !maskData.data) {
@@ -290,7 +300,7 @@ async function gridTilesWithInheritedMask(node, sourceTile, columns, rows, mode)
         return { tiles: children, cropped: 0, skipped: 0, emptied: 0 };
     }
 
-    const maskData = sourceTile?.object_mask;
+    const maskData = sourceObjectMaskData(sourceTile);
     const maskBox = objectMaskPixelBox(maskData);
     const maskImage = maskBox ? await loadObjectMaskImage(maskData) : null;
     const result = [];
@@ -304,9 +314,11 @@ async function gridTilesWithInheritedMask(node, sourceTile, columns, rows, mode)
         const childMask = cropObjectMaskForTile(node, maskImage, maskBox, child);
         if (childMask) {
             nextTile.object_mask = childMask;
+            nextTile.object_mask_source = maskData;
             cropped += 1;
         } else if (maskBox) {
             delete nextTile.object_mask;
+            delete nextTile.object_mask_source;
             if (mode === "crop_mask_skip_empty") {
                 skipped += 1;
                 continue;
@@ -318,6 +330,57 @@ async function gridTilesWithInheritedMask(node, sourceTile, columns, rows, mode)
     }
 
     return { tiles: result, cropped, skipped, emptied };
+}
+
+async function refreshInheritedMasks(node, tiles, mode) {
+    const result = [];
+    const imageCache = new Map();
+    let refreshed = 0;
+    let skipped = 0;
+    let emptied = 0;
+    let unchanged = 0;
+
+    const loadCachedMask = async (maskData) => {
+        const maskBox = objectMaskPixelBox(maskData);
+        if (!maskBox) {
+            return { maskBox: null, maskImage: null };
+        }
+        const key = `${maskBox.x0},${maskBox.y0},${maskBox.width},${maskBox.height}:${maskData.data}`;
+        let maskImage = imageCache.get(key);
+        if (!maskImage) {
+            maskImage = await loadObjectMaskImage(maskData);
+            imageCache.set(key, maskImage);
+        }
+        return { maskBox, maskImage };
+    };
+
+    for (const [index, tile] of tiles.entries()) {
+        const sourceMask = tile?.object_mask_source;
+        if (!sourceMask?.data) {
+            unchanged += 1;
+            result.push(tile);
+            continue;
+        }
+        const { maskBox, maskImage } = await loadCachedMask(sourceMask);
+        const nextTile = { ...tile };
+        const refreshedMask = cropObjectMaskForTile(node, maskImage, maskBox, tile);
+        if (refreshedMask) {
+            nextTile.object_mask = refreshedMask;
+            nextTile.object_mask_source = sourceMask;
+            refreshed += 1;
+            result.push(normalizeTile(node, nextTile));
+        } else if (mode === "crop_mask_skip_empty") {
+            skipped += 1;
+        } else {
+            delete nextTile.object_mask;
+            delete nextTile.object_mask_source;
+            Object.assign(nextTile, backgroundGridTileMetadata(index));
+            emptied += 1;
+            result.push(normalizeTile(node, nextTile));
+        }
+    }
+
+    return { tiles: result, refreshed, skipped, emptied, unchanged };
 }
 
 function sourceStorageKey(node) {
@@ -1550,6 +1613,9 @@ function renderEditor(node) {
     };
     gridColumns.onchange = refreshGridValues;
     gridRows.onchange = refreshGridValues;
+    gridMaskSelect.onchange = () => {
+        node.ttpSmartTileGridMaskMode = gridMaskSelect.value;
+    };
     updateGridValues();
     const gridCount = node.ttpSmartTileGridColumns * node.ttpSmartTileGridRows;
     const subdivideCount = tiles.length - 1 + gridCount;
@@ -1653,6 +1719,37 @@ function renderEditor(node) {
                 renderEditor(node);
             }
         }, !paintMaskHasPixels(ensurePaintMaskCanvas(node)) || tiles.length >= MAX_TILES),
+        createButton("Refresh masks", async () => {
+            updateGridValues();
+            const refreshed = await refreshInheritedMasks(node, tiles, gridMaskMode(node)).catch((error) => {
+                node.ttpSmartTileStatus = error?.message || "Refresh masks failed.";
+                return null;
+            });
+            if (!refreshed) {
+                renderEditor(node);
+                return;
+            }
+            if (!refreshed.refreshed && !refreshed.skipped && !refreshed.emptied) {
+                node.ttpSmartTileStatus = "No inherited masks to refresh.";
+                renderEditor(node);
+                return;
+            }
+            if (!refreshed.tiles.length) {
+                node.ttpSmartTileStatus = "Refresh masks skipped every empty mask tile.";
+                renderEditor(node);
+                return;
+            }
+            const parts = [`refreshed ${refreshed.refreshed}`];
+            if (refreshed.emptied) {
+                parts.push(`cleared ${refreshed.emptied}`);
+            }
+            if (refreshed.skipped) {
+                parts.push(`skipped ${refreshed.skipped}`);
+            }
+            node.ttpSmartTileStatus = `Refresh masks ${parts.join(", ")} tile(s).`;
+            writeLayout(node, refreshed.tiles, Math.min(selectedIndex, refreshed.tiles.length - 1));
+            renderEditor(node);
+        }, !tiles.some((tile) => tile?.object_mask_source?.data)),
         createButton("Clear mask", () => {
             clearPaintMask(node);
             node.ttpSmartTilePaintMode = "off";

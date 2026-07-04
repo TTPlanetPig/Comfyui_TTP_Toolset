@@ -976,6 +976,7 @@ semantic_mask_layout = json.dumps({
         "recommended_composite_mode": "replace",
         "recommended_occlusion_priority": 6200,
         "object_mask": masked_auto_meta[0]["object_mask"],
+        "object_mask_source": masked_auto_meta[0]["object_mask"],
     }],
 }, separators=(",", ":"))
 semantic_mask_meta = ttp._ttp_parse_smart_tile_layout(semantic_mask_layout, 900, 600)
@@ -983,6 +984,7 @@ assert_equal(semantic_mask_meta[0]["semantic_category"], "subject", "interactive
 assert_equal(round(semantic_mask_meta[0]["recommended_scale_weight"], 2), 1.75, "interactive parser should preserve inherited scale weight")
 assert_equal(semantic_mask_meta[0]["recommended_composite_mode"], "replace", "interactive parser should preserve inherited composite mode")
 assert_equal("object_mask" in semantic_mask_meta[0], True, "interactive parser should preserve inherited cropped object mask")
+assert_equal("object_mask_source" in semantic_mask_meta[0], True, "interactive parser should preserve parent object mask source for refresh")
 
 paint_mask = Image.new("L", (64, 48), 0)
 for x in range(8, 22):
