@@ -239,6 +239,7 @@ assert_equal(
 output_size_inputs = ttp.TTP_Smart_Tile_Output_Size_Estimate_Experimental.INPUT_TYPES()
 assert_equal(output_size_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "output size estimate should accept tile sets")
 assert_equal(output_size_inputs["required"]["scale_strategy"][0], ["median", "mean", "min", "max"], "output size estimate should expose scale strategies")
+assert_equal(output_size_inputs["optional"]["done"][0], "BOOLEAN", "output size estimate should accept a loop done gate")
 assert_equal(
     ttp.NODE_CLASS_MAPPINGS["TTP_Smart_Tile_Output_Size_Estimate_Experimental"],
     ttp.TTP_Smart_Tile_Output_Size_Estimate_Experimental,
@@ -722,6 +723,9 @@ mixed_scale_tile_set = {
         ttp.pil2tensor(Image.new("RGB", (100, 100), "white")),
     ],
 }
+deferred_scale, deferred_w, deferred_h, deferred_x, deferred_y, deferred_info = size_node.estimate_output_size(mixed_scale_tile_set, done=False)
+assert_equal([deferred_scale, deferred_w, deferred_h, deferred_x, deferred_y], [0.0, 0, 0, 0.0, 0.0], "output size estimate should skip work before loop completion")
+assert_equal("deferred" in deferred_info, True, "output size estimate should report deferred status")
 size_scale, size_w, size_h, size_scale_x, size_scale_y, size_info = size_node.estimate_output_size(mixed_scale_tile_set)
 assert_equal(round(size_scale, 4), 3.0, "output size estimate should match assemble median scale inference")
 assert_equal([size_w, size_h], [300, 150], "output size estimate should report final resolution")
@@ -731,6 +735,9 @@ assert_equal("warning=mixed_tile_scales" in size_info, True, "output size estima
 min_scale, min_w, min_h, _min_x, _min_y, _min_info = size_node.estimate_output_size(mixed_scale_tile_set, scale_strategy="min")
 assert_equal(round(min_scale, 4), 2.0, "output size estimate should support min strategy")
 assert_equal([min_w, min_h], [200, 100], "output size estimate min strategy should resize final resolution")
+done_scale, done_w, done_h, _done_x, _done_y, _done_info = size_node.estimate_output_size(mixed_scale_tile_set, done=True)
+assert_equal(round(done_scale, 4), 3.0, "output size estimate should compute when done is true")
+assert_equal([done_w, done_h], [300, 150], "output size estimate done gate should preserve final resolution")
 aligned = ttp._ttp_align_pil_to_aspect(Image.new("RGB", (561, 401), "white"), 560, 400, "center_crop")
 assert_equal(aligned.size, (560, 400), "assemble alignment should crop/resize drifted sampler output")
 resized = ttp._ttp_align_pil_to_aspect(Image.new("RGB", (500, 500), "white"), 560, 400, "resize")

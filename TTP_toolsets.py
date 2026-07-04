@@ -3849,6 +3849,7 @@ class TTP_Smart_Tile_Output_Size_Estimate_Experimental:
             },
             "optional": {
                 "source_image": ("IMAGE",),
+                "done": ("BOOLEAN", {"forceInput": True}),
             },
         }
 
@@ -3857,7 +3858,10 @@ class TTP_Smart_Tile_Output_Size_Estimate_Experimental:
     FUNCTION = "estimate_output_size"
     CATEGORY = "TTP/Smart Tile"
 
-    def estimate_output_size(self, tile_set, scale_strategy="median", source_image=None):
+    def estimate_output_size(self, tile_set, scale_strategy="median", source_image=None, done=None):
+        if done is not None and not bool(done):
+            info = "deferred: waiting for done=true before estimating final Smart Tile output size"
+            return (0.0, 0, 0, 0.0, 0.0, info)
         if not isinstance(tile_set, dict) or tile_set.get("type") != "ttp_smart_tile_set":
             raise ValueError("tile_set must come from TTP Smart Tile Interactive Crop or Loop Collect.")
         tile_meta = tile_set.get("tile_meta")
