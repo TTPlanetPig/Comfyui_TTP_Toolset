@@ -34,23 +34,54 @@ https://github.com/user-attachments/assets/af06b9d3-9c84-4a83-ba90-eb4ec4bb2e99
 
 ### **Smart Tile Workflow**
 
-The **Smart Tile** nodes provide an interactive tile workflow for layouts where you want to split an image by visual structure, such as face, hands, subject, clothes, foreground, and background.
+**Smart Tile** is an object-aware tiled img2img workflow for ComfyUI. Instead of cutting every image into equal squares, it lets you build variable-size tiles around visual structure: face, eyes, hands, text, subject, clothing, foreground details, and background/context regions.
 
-Current workflow nodes:
+![Smart Tile pipeline](docs/images/smart_tile_pipeline.svg)
 
-- `TTP Smart Tile Interactive Crop`: loads or receives a source image, provides the visual tile editor, supports manual tiles, painted masks, and SAM/QwenVL auto tile requests, and outputs a variable-size `tile_set`.
-- `TTP Smart Tile Set Preview`: previews a tile set as a contact sheet or a single selected tile.
-- `TTP QwenVL3 Local Loader`: loads a local QwenVL tagging model from ComfyUI models.
-- `TTP Smart Tile QwenVL Prompt Set Builder`: prepares per-tile prompts before loop processing.
-- `TTP Smart Tile Semantic Rank`: reads labels/captions/prompts and writes semantic priority metadata for focus/detail tiles.
-- `TTP Smart Tile Loop Source`: outputs one tile at a time for sampler/img2img processing.
-- `TTP Smart Tile Loop Collect`: collects processed tiles back into the tile set.
-- `TTP Smart Tile Image Upscale Prep`: optionally upscales one tile before sampling.
-- `TTP Smart Tile Output Size Estimate`: calculates final output scale and resolution from a processed tile set.
-- `TTP Smart Tile Assemble`: assembles processed tiles back into the final image with feathered blending, mask support, priority/layer handling, color correction, optional CPU/GPU pixel alignment, and optional GPU paste/weight accumulation.
-- `TTP Smart Tile Save Final Image`: saves only the final loop result and embeds workflow metadata.
+Smart Tile is designed for workflows where small areas need more detail than the full image. You can draw or auto-detect tiles, process one tile at a time through your sampler, then assemble the final image with feathering, masks, semantic priority, color correction, and optional pixel alignment.
 
-Interactive loop workflow:
+#### **What It Solves**
+
+- Avoids cutting important objects through the middle when a simple grid would split a face, hand, or text.
+- Allows different tile sizes, so a face tile can be small and high detail while the background stays large.
+- Sends one tile at a time through img2img, so the number of tiles can be 4, 8, 16, or anything produced by the editor.
+- Keeps high-detail focus tiles visible during assembly with priority, layer, and semantic ranking.
+- Supports mask-aware pasteback, soft detail overlay, final-only assembly, and black-base canvas mode.
+
+#### **Visual Tile Editor**
+
+![Smart Tile interactive editor](docs/images/smart_tile_interactive_auto_tile.png)
+
+`TTP Smart Tile Interactive Crop` is the recommended starting point. It can load an image like ComfyUI's official `Load Image`, or receive a connected `source_image`. The editor stores the current layout in a hidden `layout_json` widget, so your workflow keeps the tile plan.
+
+Useful editor actions:
+
+- `Replace grid`: replace the whole layout with an even grid.
+- `Grid in T#`: subdivide the selected tile without rebuilding the whole layout.
+- `Mask to Tile`: turn painted regions into object tiles.
+- `Refresh masks`: after manually moving sub-tiles from a masked tile, re-crop the inherited masks to the current tile boxes.
+- `Fill gaps`: add background tiles for uncovered areas.
+- `Auto Tile`: run SAM3.1 or QwenVL3 detection and write the detected layout back into the editor.
+
+When subdividing a masked tile with `Grid in`, the Mask mode can crop the original object mask into child tiles or skip empty mask children. The child tiles keep a parent mask source, so `Refresh masks` can update them after manual edits.
+
+#### **Core Nodes**
+
+| Node | Purpose |
+|---|---|
+| `TTP Smart Tile Interactive Crop` | Load/connect an image, create manual/painted/auto tiles, and output a variable-size `tile_set`. |
+| `TTP Smart Tile Set Preview` | Preview a tile set as a contact sheet or one selected tile. |
+| `TTP QwenVL3 Local Loader` | Load a local QwenVL tagging model from `ComfyUI/models/text_encoders`. |
+| `TTP Smart Tile QwenVL Prompt Set Builder` | Generate per-tile prompts before loop processing. |
+| `TTP Smart Tile Semantic Rank` | Classify tiles and write recommended layer, priority, scale weight, and composite metadata. |
+| `TTP Smart Tile Loop Source` | Output one tile at a time for VAE Encode / sampler / VAE Decode. |
+| `TTP Smart Tile Loop Collect` | Collect each processed tile back into the same tile set. |
+| `TTP Smart Tile Image Upscale Prep` | Optionally upscale or resize each tile before sampling, with a megapixel cap. |
+| `TTP Smart Tile Output Size Estimate` | Estimate final output scale/resolution from processed tile sizes. |
+| `TTP Smart Tile Assemble` | Paste processed tiles back with feathering, masks, color correction, priority, optional GPU paste, and optional alignment. |
+| `TTP Smart Tile Save Final Image` | Save only the final completed loop result and embed workflow metadata. |
+
+#### **Recommended Loop Workflow**
 
 ```text
 TTP Smart Tile Interactive Crop
@@ -65,15 +96,97 @@ TTP Smart Tile Interactive Crop
   -> TTP Smart Tile Save Final Image
 ```
 
-By default, `TTP Smart Tile Assemble` uses `assemble_mode=final_only`. Connect `TTP Smart Tile Loop Collect.done` to `TTP Smart Tile Assemble.done` so loop runs return a lightweight preview while `done` is false, then perform the full assemble once after the last tile. Switch `assemble_mode` to `always` only when you want a full recomposite after every tile; if pixel alignment is enabled, unfinished loop runs are automatically treated as `final_only` to avoid repeated expensive alignment passes. `assemble_device` controls the paste/weight accumulation device (`auto`, `cpu`, or `gpu`), and pixel alignment can use the GPU canvas when GPU assemble is active. Use `base_canvas_mode=black` when you want connected source/base images to remain available as references without being pasted underneath the tiles. Enable `small_tile_on_top` when small detail tiles should automatically stack above larger body/background/context tiles in overlap areas. `auto_composite_policy=safe_auto` keeps background/context tiles low, promotes detected details, and blends face/eye/glasses/mouth-style detail masks as soft overlays instead of cutting holes in lower face tiles; use `strict_layer` to restore the raw metadata layer behavior. Official `Transfer Color` methods and PIL resize/crop handling remain on their existing paths for compatibility.
+Use `TTP Smart Tile Loop Source` and `TTP Smart Tile Loop Collect` instead of manually duplicating sampler chains. The loop source outputs the current tile image and the current tile prompt. After the sampler finishes, loop collect stores the result and advances to the next tile.
+
+By default, `TTP Smart Tile Assemble` uses `assemble_mode=final_only`. Connect `TTP Smart Tile Loop Collect.done` to `TTP Smart Tile Assemble.done` so unfinished loop runs return a lightweight preview while `done=false`, then perform the full assemble once after the last tile. Switch `assemble_mode` to `always` only when you really want a full recomposite after every tile. If pixel alignment is enabled, unfinished loop runs are automatically treated as final-only to avoid repeated expensive alignment passes.
+
+#### **Auto Tile: SAM3.1 or QwenVL3**
+
+![Smart Tile automatic detection modes](docs/images/smart_tile_auto_modes.svg)
+
+`auto_detect_mode` controls how `Auto Tile` analyzes the image:
+
+| Mode | Required input | Notes |
+|---|---|---|
+| `none` | none | Auto Tile is disabled; use manual grid, painted masks, or saved layout. |
+| `sam3.1` | official SAM3/SAM3.1 model to `vision_model`, plus `CLIP` or `vision_conditioning` | Uses ComfyUI's official SAM3 Detect path. The built-in `auto_prompt` is encoded internally when `clip` is connected. |
+| `qwenvl3` | `TTP QwenVL3 Local Loader -> qwen_vl_model` | Uses QwenVL for bbox JSON. Model files are selected from `ComfyUI/models/text_encoders`. If Qwen returns one large full-frame box, Smart Tile splits it into useful detail tiles. |
+
+For QwenVL3, `TTP Smart Tile Interactive Crop` does not read `.safetensors` directly. Add `TTP QwenVL3 Local Loader`, choose the QwenVL model file, then connect its `qwen_vl_model` output into Interactive Crop.
+
+#### **Per-Tile Prompts**
+
+For manual prompt workflows, connect `TTP Smart Tile Loop Source.prompt` to your text encoder path. For automatic prompt workflows, place `TTP Smart Tile QwenVL Prompt Set Builder` before the loop:
+
+```text
+Interactive Crop
+  -> QwenVL Prompt Set Builder
+  -> Semantic Rank
+  -> Loop Source
+```
+
+The prompt builder can use a full image, every tile, or a contact sheet as QwenVL visual context. It caches results by model file, tile hash, prompts, and seed, so reruns do not need to interrogate unchanged tiles again.
+
+#### **Upscale Prep and Size Estimate**
 
 `TTP Smart Tile Image Upscale Prep` prepares each loop tile before img2img sampling. It can use a connected ComfyUI `UPSCALE_MODEL` through the same tiled upscale-model path as the built-in upscale node, or fall back to `lanczos`, `bicubic`, `bilinear`, `area`, or nearest resize when no model is connected or `use_upscale_model` is off. `scale` sets the requested enlargement, `max_megapixels` caps the final tile pixel count, and `round_to` snaps the final width/height after the cap. When the cap is active, the node rounds down so the rounded tile stays under the megapixel budget. Tile coordinates are not changed; they remain in original-image space so assemble can map the processed tile back by `sample_box` and `output_scale`.
 
-`TTP Smart Tile Semantic Rank` is optional, but useful after QwenVL prompting or auto/manual tile creation. It classifies each tile as background, subject, face, eyes, hands, text, detail, or normal from existing labels/captions/prompts, then writes semantic score, scale weight, recommended layer, priority, occlusion priority, and composite mode metadata back into the tile set. With `apply_composite_rank` on, face/eyes/text/detail tiles are promoted above background/context tiles and are marked for soft overlay blending.
-
 `TTP Smart Tile Output Size Estimate` reads the processed `tile_set` after `Loop Collect` and reports `output_scale`, final `width`/`height`, separate `scale_x`/`scale_y`, and a per-tile info log. The default `median` strategy matches Assemble's automatic tile-scale inference, and the `output_scale` output can be connected directly to `TTP Smart Tile Assemble.output_scale`. `focus_weighted` uses semantic scale weights so low-detail full/background tiles do not drag the final-only canvas scale below high-detail face/eye/text tiles. For final-only loops, connect `TTP Smart Tile Loop Collect.done` to both this node's `done` input and `TTP Smart Tile Assemble.done`; while `done=false`, this node returns a deferred zero-scale placeholder and skips tile scanning, then estimates once when `done=true`. Mixed tile scales are reported in the info string so capped or unevenly enlarged tiles are visible before final assembly.
 
-`TTP Smart Tile Interactive Crop` is the recommended starting point when you want to manually or automatically split a still image by visual regions. Its `image` input follows the official `Load Image` pattern, so uploads go to ComfyUI's input folder and the workflow stores the selected filename instead of embedding the whole image. The editor can generate a standard grid from column/row numbers, replace the full layout with that grid, subdivide the currently selected tile, add painted-mask tiles, and fill uncovered gaps. When subdividing a masked tile with `Grid in`, the Mask mode can crop the original object mask into child tiles or skip empty mask children, and `Refresh masks` can re-crop inherited child masks after manual tile edits. It stores the tile layout in a hidden widget so the workflow keeps the current plan.
+#### **Assembly, Masks, and Layer Priority**
+
+![Smart Tile assembly layer policy](docs/images/smart_tile_layer_policy.svg)
+
+`TTP Smart Tile Semantic Rank` is optional, but useful after QwenVL prompting or auto/manual tile creation. It classifies each tile as background, subject, face, eyes, hands, text, detail, or normal from existing labels/captions/prompts, then writes semantic score, scale weight, recommended layer, priority, occlusion priority, and composite mode metadata back into the tile set. With `apply_composite_rank` on, face/eyes/text/detail tiles are promoted above background/context tiles and are marked for soft overlay blending.
+
+Assembly options worth starting with:
+
+| Setting | Suggested value | Why |
+|---|---|---|
+| `assemble_mode` | `final_only` | Assemble once when the loop is complete; much faster than recompositing every step. |
+| `assemble_device` | `auto` or `gpu` | Uses GPU paste/weight accumulation when available. |
+| `base_canvas_mode` | `black` when you do not want source pixels underneath | Prevents the original image from showing through uncovered or low-weight areas. |
+| `auto_composite_policy` | `safe_auto` | Keeps background/context low and promotes focus/detail tiles. |
+| `small_tile_on_top` | `true` for detail workflows | Helps small face/eye/text tiles win overlaps against larger body/context tiles. |
+| `mask_blend_mode` | `auto` or `mask_feather` | Uses object masks when present and feathered rectangular masks otherwise. |
+| `color_correction` | `off` first, then `reinhard_lab`, `mkl_lab`, or `histogram` as needed | Uses ComfyUI's official Transfer Color logic; reference defaults to the source image. |
+
+Detail tiles should blend over lower layers instead of cutting holes into them. The safe auto policy treats face, eyes, mouth, glasses, text, and similar focus regions as soft overlays when possible.
+
+![Smart Tile face detail result](docs/images/smart_tile_face_detail_result.png)
+
+Mask and weight previews can help diagnose pasteback behavior:
+
+![Smart Tile mask weight example](docs/images/smart_tile_mask_weight_example.png)
+
+![Smart Tile soft overlay mask example](docs/images/smart_tile_soft_overlay_mask_example.png)
+
+#### **Recommended Starting Parameters**
+
+| Scenario | Recommended settings |
+|---|---|
+| General manual grid | `grid=3x3`, `default_pad=32`, `default_blend=32` or `64`, `round_to=8`, `include_full_image=false` |
+| Portrait/detail workflow | Auto Tile + Qwen/SAM prompt for `person, face, eyes, hands, text, foreground object` |
+| Variable-size detail tiles | Use `TTP Smart Tile Image Upscale Prep` before sampler, then `Output Size Estimate` before Assemble |
+| Avoid original image leaking through | `base_canvas_mode=black` |
+| Small details should stay visible | `small_tile_on_top=true`, `auto_composite_policy=safe_auto` |
+| Expensive alignment workflow | `assemble_mode=final_only`, connect `done` from Loop Collect |
+| Strict manual layout | Keep Auto Tile mode as `none` after you finish editing, so formal runs do not replace your layout |
+
+#### **Troubleshooting**
+
+| Symptom | What to check |
+|---|---|
+| Auto Tile did not change the layout | Make sure `auto_detect_mode` is `sam3.1` or `qwenvl3`, the required model input is connected, then read the editor status message. |
+| QwenVL3 does not split the image | Confirm `TTP QwenVL3 Local Loader` is connected to `qwen_vl_model`. Qwen must return bbox JSON; Smart Tile accepts common `bbox`, `bbox_2d`, `box_2d`, `objects`, and `xywh` formats. |
+| Running the full workflow replaces manual edits | Set `auto_detect_mode=none` after Auto Tile if you only wanted detection once, then manually edit the saved layout. |
+| A manually moved mask tile still uses the old mask | Click `Refresh masks` after moving Grid-in child tiles from a masked parent. |
+| Native Save Image saves multiple loop frames | Use `TTP Smart Tile Save Final Image`; loop previews are not treated as final output. |
+| Face or eyes are hidden under a larger tile | Use `TTP Smart Tile Semantic Rank`, enable `small_tile_on_top`, and keep `auto_composite_policy=safe_auto`. |
+| The original image shows through | Use `base_canvas_mode=black` and make sure `Fill gaps` has covered empty regions. |
+| Assemble is slow | Use `assemble_mode=final_only`; avoid repeated pixel alignment during unfinished loop steps. |
+
+#### **Advanced Layout JSON**
 
 Example layout:
 

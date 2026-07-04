@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-labelledby="title desc">
+  <title id="title">Smart Tile assembly layer policy</title>
+  <desc id="desc">Background tiles are lower, object tiles are in the middle, and smaller focus details such as eyes and text are placed on top.</desc>
+  <rect width="1280" height="520" fill="#111827"/>
+  <style>
+    .title{font:700 34px Arial,sans-serif;fill:#f8fafc}
+    .sub{font:400 17px Arial,sans-serif;fill:#cbd5e1}
+    .panel{fill:#1f2937;stroke:#64748b;stroke-width:2}
+    .bg{fill:#334155;stroke:#94a3b8;stroke-width:2}
+    .body{fill:#164e63;stroke:#22d3ee;stroke-width:3}
+    .face{fill:#14532d;stroke:#4ade80;stroke-width:3}
+    .detail{fill:#713f12;stroke:#facc15;stroke-width:3}
+    .text{font:700 18px Arial,sans-serif;fill:#f8fafc}
+    .small{font:400 14px Arial,sans-serif;fill:#cbd5e1}
+    .rule{font:700 16px Arial,sans-serif;fill:#f8fafc}
+  </style>
+  <text x="44" y="58" class="title">Assembly priority: keep high-detail tiles visible</text>
+  <text x="44" y="88" class="sub">Use semantic rank and small_tile_on_top so small face/eye/text tiles are not buried under larger context tiles.</text>
+
+  <rect x="70" y="140" width="420" height="310" rx="8" class="panel"/>
+  <rect x="118" y="205" width="300" height="186" rx="4" class="bg"/>
+  <text x="140" y="236" class="text">Background / context</text>
+  <text x="140" y="262" class="small">large tile, low priority</text>
+  <rect x="182" y="184" width="190" height="220" rx="4" class="body"/>
+  <text x="204" y="320" class="text">Subject / body</text>
+  <text x="204" y="344" class="small">middle layer</text>
+  <rect x="218" y="166" width="132" height="102" rx="4" class="face"/>
+  <text x="248" y="208" class="text">Face</text>
+  <text x="236" y="232" class="small">higher layer</text>
+  <rect x="248" y="188" width="38" height="24" rx="4" class="detail"/>
+  <rect x="300" y="188" width="38" height="24" rx="4" class="detail"/>
+  <text x="241" y="153" class="text">Eyes / small detail</text>
+
+  <rect x="560" y="140" width="620" height="310" rx="8" class="panel"/>
+  <text x="604" y="188" class="rule">Recommended defaults</text>
+  <text x="604" y="226" class="small">1. assemble_mode = final_only</text>
+  <text x="604" y="254" class="small">2. auto_composite_policy = safe_auto</text>
+  <text x="604" y="282" class="small">3. small_tile_on_top = true when detail tiles should win</text>
+  <text x="604" y="310" class="small">4. mask_blend_mode = auto or mask_feather for object-aware paste</text>
+  <text x="604" y="338" class="small">5. base_canvas_mode = black when source image should not show through</text>
+  <text x="604" y="384" class="rule">Soft overlay avoids cutting holes</text>
+  <text x="604" y="414" class="small">Face, eyes, mouth, glasses, text, and other focus tiles blend over lower layers instead of subtracting from them.</text>
+</svg>
