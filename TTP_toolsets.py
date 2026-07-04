@@ -2242,20 +2242,48 @@ def _ttp_extract_json_object(text):
 
 def _ttp_extract_json_array(text):
     text = _ttp_clean_qwen_vl_response(text)
+
+    def array_from_object(parsed):
+        if not isinstance(parsed, dict):
+            return []
+        for key in ("objects", "boxes", "bboxes", "tiles", "detections", "regions", "items", "result"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                return value
+        if any(key in parsed for key in ("bbox", "box", "bbox_2d", "box_2d", "rect", "rectangle", "coordinates")):
+            return [parsed]
+        return []
+
+    parsed = None
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return parsed
+        wrapped = array_from_object(parsed)
+        if wrapped:
+            return wrapped
+    except Exception:
+        pass
+
+    if isinstance(parsed, dict):
+        wrapped = array_from_object(parsed)
+        if wrapped:
+            return wrapped
+
     start = text.find("[")
     end = text.rfind("]")
     if start >= 0 and end > start:
         try:
             parsed = json.loads(text[start:end + 1])
-            return parsed if isinstance(parsed, list) else []
+            if isinstance(parsed, list) and (not parsed or any(isinstance(item, dict) for item in parsed)):
+                return parsed
         except Exception:
             pass
+
     parsed = _ttp_extract_json_object(text)
-    if isinstance(parsed, dict):
-        for key in ("objects", "boxes", "bboxes", "tiles", "detections"):
-            value = parsed.get(key)
-            if isinstance(value, list):
-                return value
+    wrapped = array_from_object(parsed)
+    if wrapped:
+        return wrapped
     return []
 
 
@@ -2860,21 +2888,71 @@ def _ttp_run_sam3_auto_layout(
     return layout_json, f"SAM3 inference created an auto tile layout from {count} detected object(s){paint_note}, {prompt_note}."
 
 
+def _ttp_qwen_bbox_to_xyxy(item, image_width, image_height):
+    bbox = None
+    bbox_key = ""
+    for key in ("bbox", "box", "bbox_2d", "box_2d", "rect", "rectangle", "coordinates"):
+        if key in item:
+            bbox = item.get(key)
+            bbox_key = key
+            break
+    if bbox is None:
+        return None
+
+    def scale_pair(x_value, y_value, max_value=None):
+        max_value = float(max_value if max_value is not None else max(abs(float(x_value)), abs(float(y_value))))
+        if max_value <= 1.5:
+            return float(x_value) * image_width, float(y_value) * image_height
+        if max_value <= 1000.0:
+            return float(x_value) * image_width / 1000.0, float(y_value) * image_height / 1000.0
+        return float(x_value), float(y_value)
+
+    if isinstance(bbox, dict):
+        lower = {str(key).lower(): value for key, value in bbox.items()}
+        if {"x", "y", "width", "height"}.issubset(lower) or {"x", "y", "w", "h"}.issubset(lower):
+            width_value = lower.get("width", lower.get("w"))
+            height_value = lower.get("height", lower.get("h"))
+            max_value = max(abs(float(lower["x"])), abs(float(lower["y"])), abs(float(width_value)), abs(float(height_value)))
+            x0, y0 = scale_pair(lower["x"], lower["y"], max_value)
+            w, h = scale_pair(width_value, height_value, max_value)
+            return [x0, y0, x0 + w, y0 + h]
+        key_sets = (
+            ("x1", "y1", "x2", "y2"),
+            ("xmin", "ymin", "xmax", "ymax"),
+            ("left", "top", "right", "bottom"),
+        )
+        for keys in key_sets:
+            if set(keys).issubset(lower):
+                values = [float(lower[key]) for key in keys]
+                max_value = max(abs(value) for value in values)
+                x0, y0 = scale_pair(values[0], values[1], max_value)
+                x1, y1 = scale_pair(values[2], values[3], max_value)
+                return [x0, y0, x1, y1]
+        return None
+
+    if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+        return None
+    values = [float(value) for value in bbox[:4]]
+    max_value = max(abs(value) for value in values)
+    x0, y0 = scale_pair(values[0], values[1], max_value)
+    x1_or_w, y1_or_h = scale_pair(values[2], values[3], max_value)
+    bbox_format = str(item.get("bbox_format", item.get("format", bbox_key))).lower()
+    if "xywh" in bbox_format or "width" in bbox_format or "wh" == bbox_format:
+        return [x0, y0, x0 + x1_or_w, y0 + y1_or_h]
+    if x1_or_w <= x0 or y1_or_h <= y0:
+        return [x0, y0, x0 + max(1.0, x1_or_w), y0 + max(1.0, y1_or_h)]
+    return [x0, y0, x1_or_w, y1_or_h]
+
+
 def _ttp_qwen_bbox_items(raw, image_width, image_height):
     items = []
     for index, item in enumerate(_ttp_extract_json_array(raw)):
         if not isinstance(item, dict):
             continue
-        bbox = item.get("bbox", item.get("box", item.get("bbox_2d")))
-        if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+        box = _ttp_qwen_bbox_to_xyxy(item, image_width, image_height)
+        if box is None:
             continue
-        values = [float(value) for value in bbox[:4]]
-        if max(values) <= 1.5:
-            x0, y0, x1, y1 = values[0] * image_width, values[1] * image_height, values[2] * image_width, values[3] * image_height
-        elif max(values) <= 1000.0:
-            x0, y0, x1, y1 = values[0] * image_width / 1000.0, values[1] * image_height / 1000.0, values[2] * image_width / 1000.0, values[3] * image_height / 1000.0
-        else:
-            x0, y0, x1, y1 = values
+        x0, y0, x1, y1 = box
         x0, y0, x1, y1 = _ttp_clamp_box_xyxy([x0, y0, x1, y1], image_width, image_height)
         items.append({
             "x": x0,
@@ -2886,6 +2964,45 @@ def _ttp_qwen_bbox_items(raw, image_width, image_height):
             "prompt_hint": str(item.get("prompt_hint", "")),
         })
     return items
+
+
+def _ttp_expand_single_large_qwen_bbox(items, image_width, image_height, max_tiles):
+    if len(items) != 1 or int(max_tiles) <= 1:
+        return items, False
+    item = items[0]
+    area_ratio = float(item.get("width", 0.0)) * float(item.get("height", 0.0)) / max(1.0, float(image_width * image_height))
+    if area_ratio < 0.82:
+        return items, False
+    x0 = float(item.get("x", 0.0))
+    y0 = float(item.get("y", 0.0))
+    width = max(1.0, float(item.get("width", image_width)))
+    height = max(1.0, float(item.get("height", image_height)))
+    cols = 2
+    rows = 2
+    label = str(item.get("label", "large region"))
+    score = float(item.get("score", 1.0) or 1.0)
+    split_items = []
+    for row in range(rows):
+        for col in range(cols):
+            child_x0 = x0 + width * col / cols
+            child_y0 = y0 + height * row / rows
+            child_x1 = x0 + width * (col + 1) / cols
+            child_y1 = y0 + height * (row + 1) / rows
+            child_x0, child_y0, child_x1, child_y1 = _ttp_clamp_box_xyxy(
+                [child_x0, child_y0, child_x1, child_y1],
+                image_width,
+                image_height,
+            )
+            split_items.append({
+                "x": child_x0,
+                "y": child_y0,
+                "width": child_x1 - child_x0,
+                "height": child_y1 - child_y0,
+                "label": f"{label} detail {len(split_items) + 1}",
+                "score": max(0.05, score * 0.95),
+                "prompt_hint": str(item.get("prompt_hint", "")),
+            })
+    return split_items[: max(1, int(max_tiles))], True
 
 
 def _ttp_run_qwenvl3_auto_layout(
@@ -2906,6 +3023,7 @@ def _ttp_run_qwenvl3_auto_layout(
         _TTP_QWENVL_PRESETS["bbox_detect"]["instruction"],
         f"User focus prompt: {auto_prompt}",
         "Prioritize face, eyes, hands, text, glasses, foreground subject, and important small details.",
+        "Return 3 to 8 useful regions when visible. Avoid returning only one full-image or full-body box; split large subjects into face, hands, clothing/detail, and background/context regions.",
         "Return only the JSON list. No markdown. No explanation.",
     ])
     messages = [
@@ -2917,6 +3035,8 @@ def _ttp_run_qwenvl3_auto_layout(
     ]
     raw = _ttp_qwen_vl_local_chat(qwen_vl_model, messages, max_new_tokens=1024, temperature=0.0, seed=0)
     bboxes = _ttp_qwen_bbox_items(raw, image_width, image_height)
+    raw_bbox_count = len(bboxes)
+    bboxes, expanded_large_region = _ttp_expand_single_large_qwen_bbox(bboxes, image_width, image_height, int(max_tiles))
     paint_mask = _ttp_decode_interactive_paint_mask(paint_mask_payload, image_width, image_height)
     paint_items, paint_masks = _ttp_paint_mask_to_items(paint_mask, image_width, image_height)
     if not bboxes and not paint_items:
@@ -2935,7 +3055,8 @@ def _ttp_run_qwenvl3_auto_layout(
         masks=[Image.new("L", (image_width, image_height), 0) for _item in bboxes] + paint_masks,
     )
     paint_note = f", plus {len(paint_items)} paint mask region(s)" if paint_items else ""
-    return layout_json, f"QwenVL3 inference created an auto tile layout from {len(bboxes)} detected object(s){paint_note}."
+    expand_note = " Expanded one large Qwen region into detail tiles." if expanded_large_region else ""
+    return layout_json, f"QwenVL3 inference created an auto tile layout from {raw_bbox_count} detected object(s), using {len(bboxes)} tile region(s){paint_note}.{expand_note}"
 
 
 def _ttp_run_paint_mask_auto_layout(

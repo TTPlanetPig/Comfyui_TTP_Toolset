@@ -610,6 +610,22 @@ bbox_items = ttp._ttp_qwen_bbox_items('```json\n[{"label":"face","bbox":[300,200
 assert_equal(len(bbox_items), 1, "Qwen bbox parser should read JSON list outputs")
 assert_equal(bbox_items[0]["label"], "face", "Qwen bbox parser should preserve labels")
 assert_equal(round(bbox_items[0]["x"]), 300, "Qwen bbox parser should convert normalized x coordinates")
+single_bbox_item = ttp._ttp_qwen_bbox_items('{"label":"face","bbox_2d":[300,200,500,450],"score":0.9}', 1000, 800)
+assert_equal(len(single_bbox_item), 1, "Qwen bbox parser should accept a single JSON object output")
+wrapped_bbox_items = ttp._ttp_qwen_bbox_items('{"objects":[{"label":"hand","box_2d":[100,120,260,360],"score":0.8}]}', 1000, 800)
+assert_equal(wrapped_bbox_items[0]["label"], "hand", "Qwen bbox parser should accept objects-wrapped outputs")
+dict_bbox_items = ttp._ttp_qwen_bbox_items('{"label":"text","rect":{"x":100,"y":120,"width":200,"height":80},"score":0.7}', 1000, 800)
+assert_equal(round(dict_bbox_items[0]["width"]), 200, "Qwen bbox parser should accept x/y/width/height rectangle outputs")
+xywh_bbox_items = ttp._ttp_qwen_bbox_items('[{"label":"detail","bbox":[700,100,200,300],"bbox_format":"xywh"}]', 1000, 800)
+assert_equal(round(xywh_bbox_items[0]["x"] + xywh_bbox_items[0]["width"]), 900, "Qwen bbox parser should accept xywh list outputs")
+large_qwen_items, large_qwen_expanded = ttp._ttp_expand_single_large_qwen_bbox(
+    [{"x": 0, "y": 0, "width": 1000, "height": 800, "label": "full image", "score": 1.0}],
+    1000,
+    800,
+    8,
+)
+assert_equal(large_qwen_expanded, True, "Qwen auto tile should split a single full-frame bbox into useful regions")
+assert_equal(len(large_qwen_items), 4, "Qwen large bbox fallback should create a 2x2 tile set")
 
 loop_source = ttp.TTP_Smart_Tile_Loop_Source_Experimental()
 loop_collect = ttp.TTP_Smart_Tile_Loop_Collect_Experimental()
