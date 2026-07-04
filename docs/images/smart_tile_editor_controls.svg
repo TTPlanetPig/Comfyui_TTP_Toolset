@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="560" viewBox="0 0 1280 560" role="img" aria-labelledby="title desc">
+  <title id="title">Smart Tile editor controls</title>
+  <desc id="desc">A neutral diagram of the Smart Tile editor, showing tile boxes, grid controls, mask controls, refresh masks, fill gaps, and auto tile.</desc>
+  <rect width="1280" height="560" fill="#0f172a"/>
+  <style>
+    .title{font:700 34px Arial,sans-serif;fill:#f8fafc}
+    .sub{font:400 17px Arial,sans-serif;fill:#cbd5e1}
+    .panel{fill:#172033;stroke:#475569;stroke-width:2}
+    .image{fill:#1e293b;stroke:#94a3b8;stroke-width:3}
+    .tile{fill:#0ea5e944;stroke:#7dd3fc;stroke-width:3}
+    .mask{fill:#22c55e44;stroke:#86efac;stroke-width:3}
+    .button{fill:#e2e8f0;stroke:#cbd5e1;stroke-width:1}
+    .active{fill:#38bdf8;stroke:#7dd3fc;stroke-width:1}
+    .text{font:700 18px Arial,sans-serif;fill:#f8fafc}
+    .small{font:400 14px Arial,sans-serif;fill:#cbd5e1}
+    .dark{font:700 14px Arial,sans-serif;fill:#0f172a}
+    .label{font:700 15px Arial,sans-serif;fill:#f8fafc}
+  </style>
+  <text x="44" y="58" class="title">Interactive Crop editor</text>
+  <text x="44" y="88" class="sub">Create variable-size tiles manually, from masks, from grids, or from SAM3.1 / QwenVL3 analysis.</text>
+
+  <rect x="60" y="125" width="570" height="360" rx="8" class="panel"/>
+  <rect x="100" y="165" width="490" height="280" rx="4" class="image"/>
+  <text x="122" y="195" class="small">source image preview</text>
+  <rect x="128" y="215" width="190" height="150" rx="2" class="tile"/>
+  <rect x="340" y="200" width="210" height="210" rx="2" class="tile"/>
+  <rect x="220" y="295" width="155" height="115" rx="2" class="mask"/>
+  <text x="154" y="244" class="label">T1</text>
+  <text x="368" y="230" class="label">T2</text>
+  <text x="246" y="326" class="label">paint mask tile</text>
+
+  <rect x="680" y="125" width="540" height="360" rx="8" class="panel"/>
+  <text x="715" y="166" class="text">Controls</text>
+  <text x="715" y="198" class="small">Grid</text>
+  <rect x="770" y="178" width="72" height="34" rx="5" class="button"/>
+  <text x="798" y="200" class="dark">3</text>
+  <text x="855" y="199" class="small">x</text>
+  <rect x="880" y="178" width="72" height="34" rx="5" class="button"/>
+  <text x="908" y="200" class="dark">3</text>
+  <rect x="970" y="178" width="118" height="34" rx="5" class="button"/>
+  <text x="990" y="200" class="dark">Replace grid</text>
+  <rect x="1100" y="178" width="92" height="34" rx="5" class="button"/>
+  <text x="1116" y="200" class="dark">Grid in T#</text>
+
+  <text x="715" y="252" class="small">Mask</text>
+  <rect x="770" y="232" width="74" height="34" rx="5" class="button"/>
+  <text x="790" y="254" class="dark">Brush</text>
+  <rect x="856" y="232" width="72" height="34" rx="5" class="button"/>
+  <text x="880" y="254" class="dark">Erase</text>
+  <rect x="940" y="232" width="108" height="34" rx="5" class="button"/>
+  <text x="958" y="254" class="dark">Mask to Tile</text>
+  <rect x="1060" y="232" width="112" height="34" rx="5" class="button"/>
+  <text x="1076" y="254" class="dark">Refresh masks</text>
+
+  <text x="715" y="306" class="small">Tile selection</text>
+  <rect x="826" y="286" width="42" height="34" rx="5" class="active"/>
+  <text x="838" y="308" class="dark">T1</text>
+  <rect x="878" y="286" width="42" height="34" rx="5" class="button"/>
+  <text x="890" y="308" class="dark">T2</text>
+  <rect x="930" y="286" width="42" height="34" rx="5" class="button"/>
+  <text x="942" y="308" class="dark">T3</text>
+  <rect x="982" y="286" width="42" height="34" rx="5" class="button"/>
+  <text x="994" y="308" class="dark">T4</text>
+  <rect x="1036" y="286" width="92" height="34" rx="5" class="button"/>
+  <text x="1054" y="308" class="dark">Auto Tile</text>
+
+  <text x="715" y="360" class="small">Layout cleanup</text>
+  <rect x="826" y="340" width="82" height="34" rx="5" class="button"/>
+  <text x="846" y="362" class="dark">Add tile</text>
+  <rect x="920" y="340" width="78" height="34" rx="5" class="button"/>
+  <text x="943" y="362" class="dark">Delete</text>
+  <rect x="1010" y="340" width="78" height="34" rx="5" class="button"/>
+  <text x="1028" y="362" class="dark">Fill gaps</text>
+  <rect x="1100" y="340" width="92" height="34" rx="5" class="button"/>
+  <text x="1116" y="362" class="dark">Reset 2x2</text>
+
+  <text x="715" y="420" class="small">Tip: after using Auto Tile once, set auto_detect_mode to none before formal runs if you want to preserve manual edits.</text>
+</svg>

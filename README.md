@@ -50,7 +50,7 @@ Smart Tile is designed for workflows where small areas need more detail than the
 
 #### **Visual Tile Editor**
 
-![Smart Tile interactive editor](docs/images/smart_tile_interactive_auto_tile.png)
+![Smart Tile editor controls](docs/images/smart_tile_editor_controls.svg)
 
 `TTP Smart Tile Interactive Crop` is the recommended starting point. It can load an image like ComfyUI's official `Load Image`, or receive a connected `source_image`. The editor stores the current layout in a hidden `layout_json` widget, so your workflow keeps the tile plan.
 
@@ -152,14 +152,6 @@ Assembly options worth starting with:
 | `color_correction` | `off` first, then `reinhard_lab`, `mkl_lab`, or `histogram` as needed | Uses ComfyUI's official Transfer Color logic; reference defaults to the source image. |
 
 Detail tiles should blend over lower layers instead of cutting holes into them. The safe auto policy treats face, eyes, mouth, glasses, text, and similar focus regions as soft overlays when possible.
-
-![Smart Tile face detail result](docs/images/smart_tile_face_detail_result.png)
-
-Mask and weight previews can help diagnose pasteback behavior:
-
-![Smart Tile mask weight example](docs/images/smart_tile_mask_weight_example.png)
-
-![Smart Tile soft overlay mask example](docs/images/smart_tile_soft_overlay_mask_example.png)
 
 #### **Recommended Starting Parameters**
 
