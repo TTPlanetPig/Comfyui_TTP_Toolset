@@ -42,6 +42,7 @@ Current workflow nodes:
 - `TTP Smart Tile Set Preview`: previews a tile set as a contact sheet or a single selected tile.
 - `TTP QwenVL3 Local Loader`: loads a local QwenVL tagging model from ComfyUI models.
 - `TTP Smart Tile QwenVL Prompt Set Builder`: prepares per-tile prompts before loop processing.
+- `TTP Smart Tile Semantic Rank`: reads labels/captions/prompts and writes semantic priority metadata for focus/detail tiles.
 - `TTP Smart Tile Loop Source`: outputs one tile at a time for sampler/img2img processing.
 - `TTP Smart Tile Loop Collect`: collects processed tiles back into the tile set.
 - `TTP Smart Tile Image Upscale Prep`: optionally upscales one tile before sampling.
@@ -54,9 +55,11 @@ Interactive loop workflow:
 ```text
 TTP Smart Tile Interactive Crop
   -> TTP Smart Tile QwenVL Prompt Set Builder (optional)
+  -> TTP Smart Tile Semantic Rank (optional)
   -> TTP Smart Tile Loop Source
   -> VAE Encode / Sampler / VAE Decode
   -> TTP Smart Tile Loop Collect
+  -> TTP Smart Tile Semantic Rank (optional final refresh)
   -> TTP Smart Tile Output Size Estimate (optional)
   -> TTP Smart Tile Assemble
   -> TTP Smart Tile Save Final Image
@@ -66,7 +69,9 @@ By default, `TTP Smart Tile Assemble` uses `assemble_mode=final_only`. Connect `
 
 `TTP Smart Tile Image Upscale Prep` prepares each loop tile before img2img sampling. It can use a connected ComfyUI `UPSCALE_MODEL` through the same tiled upscale-model path as the built-in upscale node, or fall back to `lanczos`, `bicubic`, `bilinear`, `area`, or nearest resize when no model is connected or `use_upscale_model` is off. `scale` sets the requested enlargement, `max_megapixels` caps the final tile pixel count, and `round_to` snaps the final width/height after the cap. When the cap is active, the node rounds down so the rounded tile stays under the megapixel budget. Tile coordinates are not changed; they remain in original-image space so assemble can map the processed tile back by `sample_box` and `output_scale`.
 
-`TTP Smart Tile Output Size Estimate` reads the processed `tile_set` after `Loop Collect` and reports `output_scale`, final `width`/`height`, separate `scale_x`/`scale_y`, and a per-tile info log. The default `median` strategy matches Assemble's automatic tile-scale inference, and the `output_scale` output can be connected directly to `TTP Smart Tile Assemble.output_scale`. For final-only loops, connect `TTP Smart Tile Loop Collect.done` to both this node's `done` input and `TTP Smart Tile Assemble.done`; while `done=false`, this node returns a deferred zero-scale placeholder and skips tile scanning, then estimates once when `done=true`. Mixed tile scales are reported in the info string so capped or unevenly enlarged tiles are visible before final assembly.
+`TTP Smart Tile Semantic Rank` is optional, but useful after QwenVL prompting or auto/manual tile creation. It classifies each tile as background, subject, face, eyes, hands, text, detail, or normal from existing labels/captions/prompts, then writes semantic score, scale weight, recommended layer, priority, occlusion priority, and composite mode metadata back into the tile set. With `apply_composite_rank` on, face/eyes/text/detail tiles are promoted above background/context tiles and are marked for soft overlay blending.
+
+`TTP Smart Tile Output Size Estimate` reads the processed `tile_set` after `Loop Collect` and reports `output_scale`, final `width`/`height`, separate `scale_x`/`scale_y`, and a per-tile info log. The default `median` strategy matches Assemble's automatic tile-scale inference, and the `output_scale` output can be connected directly to `TTP Smart Tile Assemble.output_scale`. `focus_weighted` uses semantic scale weights so low-detail full/background tiles do not drag the final-only canvas scale below high-detail face/eye/text tiles. For final-only loops, connect `TTP Smart Tile Loop Collect.done` to both this node's `done` input and `TTP Smart Tile Assemble.done`; while `done=false`, this node returns a deferred zero-scale placeholder and skips tile scanning, then estimates once when `done=true`. Mixed tile scales are reported in the info string so capped or unevenly enlarged tiles are visible before final assembly.
 
 `TTP Smart Tile Interactive Crop` is the recommended starting point when you want to manually or automatically split a still image by visual regions. Its `image` input follows the official `Load Image` pattern, so uploads go to ComfyUI's input folder and the workflow stores the selected filename instead of embedding the whole image. The editor can generate a standard grid from column/row numbers, replace the full layout with that grid, subdivide the currently selected tile, add painted-mask tiles, and fill uncovered gaps. It stores the tile layout in a hidden widget so the workflow keeps the current plan.
 

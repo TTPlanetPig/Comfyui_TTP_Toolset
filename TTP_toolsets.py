@@ -793,6 +793,33 @@ def _ttp_tile_search_text(tile):
     return " ".join((label, name, source))
 
 
+def _ttp_tile_semantic_text(tile):
+    fields = (
+        "label",
+        "name",
+        "source",
+        "caption",
+        "prompt",
+        "prompt_tag",
+        "prompt_source",
+        "object_id",
+        "semantic_category",
+        "semantic_role",
+    )
+    return " ".join(str(tile.get(field, "") or "").lower() for field in fields)
+
+
+def _ttp_tile_context_text(tile):
+    fields = ("label", "name", "source", "semantic_category", "semantic_role")
+    return " ".join(str(tile.get(field, "") or "").lower() for field in fields)
+
+
+def _ttp_text_has_any(text, keywords):
+    normalized = re.sub(r"[^a-z0-9_]+", " ", str(text or "").lower())
+    padded = f" {normalized} "
+    return any(f" {str(keyword).lower()} " in padded for keyword in keywords)
+
+
 def _ttp_is_context_tile_text(text):
     return any(word in str(text or "") for word in ("background", "context", "full image", "full_image", "large context"))
 
@@ -807,10 +834,160 @@ def _ttp_is_detail_tile_text(text):
     return any(keyword in str(text or "") for keyword in detail_keywords)
 
 
+def _ttp_tile_area_ratio(tile, original_area):
+    sample_box = tile.get("sample_box", [0, 0, 0, 0])
+    if len(sample_box) < 4:
+        return 0.0
+    area = max(0.0, float(sample_box[2])) * max(0.0, float(sample_box[3]))
+    return _ttp_clamp(area / max(1.0, float(original_area)), 0.0, 1.0)
+
+
+def _ttp_tile_semantic_category(tile):
+    text = _ttp_tile_semantic_text(tile)
+    if _ttp_is_context_tile_text(_ttp_tile_context_text(tile)):
+        return "background"
+    if _ttp_text_has_any(text, ("eye", "eyes", "eyelash", "eyelashes", "eyebrow", "eyebrows", "glasses")):
+        return "eyes"
+    if _ttp_text_has_any(text, ("mouth", "lip", "lips", "teeth", "nose", "ear", "ears")):
+        return "face_detail"
+    if _ttp_text_has_any(text, ("face", "head", "portrait")):
+        return "face"
+    if _ttp_text_has_any(text, ("hand", "hands", "finger", "fingers")):
+        return "hands"
+    if _ttp_text_has_any(text, ("text", "letter", "letters", "logo", "sign", "typography")):
+        return "text"
+    if _ttp_text_has_any(text, ("person", "body", "torso", "clothing", "dress", "subject")):
+        return "subject"
+    if _ttp_text_has_any(text, ("foreground", "object", "product", "item", "prop")):
+        return "object"
+    if _ttp_is_detail_tile_text(text):
+        return "detail"
+    return "normal"
+
+
+def _ttp_semantic_role_from_category(category):
+    if category == "background":
+        return "background"
+    if category in ("eyes", "face", "face_detail", "hands", "text", "detail"):
+        return "focus"
+    if category in ("subject", "object"):
+        return "subject"
+    return "normal"
+
+
+def _ttp_semantic_base_score(category, policy):
+    policy = str(policy or "portrait")
+    if policy == "product":
+        scores = {
+            "text": 9.0,
+            "object": 8.5,
+            "detail": 7.0,
+            "face": 6.5,
+            "eyes": 6.5,
+            "face_detail": 6.5,
+            "hands": 6.0,
+            "subject": 5.5,
+            "normal": 3.0,
+            "background": 0.7,
+        }
+    elif policy == "text":
+        scores = {
+            "text": 10.0,
+            "eyes": 7.0,
+            "face_detail": 7.0,
+            "face": 6.5,
+            "detail": 6.5,
+            "object": 5.5,
+            "hands": 5.0,
+            "subject": 4.5,
+            "normal": 2.5,
+            "background": 0.6,
+        }
+    elif policy == "balanced":
+        scores = {
+            "eyes": 9.0,
+            "face_detail": 8.5,
+            "face": 8.0,
+            "text": 8.0,
+            "hands": 7.0,
+            "detail": 6.5,
+            "object": 6.0,
+            "subject": 5.5,
+            "normal": 3.0,
+            "background": 0.8,
+        }
+    else:
+        scores = {
+            "eyes": 10.0,
+            "face_detail": 9.0,
+            "face": 8.5,
+            "hands": 7.5,
+            "text": 7.0,
+            "detail": 6.5,
+            "subject": 5.5,
+            "object": 4.5,
+            "normal": 3.0,
+            "background": 0.7,
+        }
+    return scores.get(category, scores.get("normal", 3.0))
+
+
+def _ttp_semantic_scale_weight(tile, original_area=1.0):
+    explicit_weight = tile.get("recommended_scale_weight", None)
+    if explicit_weight is not None:
+        return _ttp_safe_float(explicit_weight, 1.0, 0.05, 8.0)
+    category = str(tile.get("semantic_category", "") or _ttp_tile_semantic_category(tile))
+    area_ratio = _ttp_tile_area_ratio(tile, original_area)
+    if category == "background":
+        return 0.25
+    weights = {
+        "eyes": 2.8,
+        "face_detail": 2.5,
+        "face": 2.2,
+        "text": 2.4,
+        "hands": 1.9,
+        "detail": 1.8,
+        "object": 1.4,
+        "subject": 1.2,
+        "normal": 1.0,
+    }
+    weight = weights.get(category, 1.0)
+    if area_ratio < 0.18:
+        weight += (0.18 - area_ratio) * 2.0
+    if tile.get("object_mask"):
+        weight += 0.25
+    return _ttp_clamp(weight, 0.05, 8.0)
+
+
+def _ttp_weighted_percentile(values, weights=None, percentile=0.7):
+    if not values:
+        return 1.0
+    value_array = np.asarray(values, dtype=np.float32)
+    if weights is None or len(weights) != len(values):
+        return float(np.percentile(value_array, percentile * 100.0))
+    weight_array = np.asarray(weights, dtype=np.float32)
+    valid = np.isfinite(value_array) & np.isfinite(weight_array) & (weight_array > 0.0)
+    if not np.any(valid):
+        return float(np.median(value_array))
+    value_array = value_array[valid]
+    weight_array = weight_array[valid]
+    order = np.argsort(value_array)
+    value_array = value_array[order]
+    weight_array = weight_array[order]
+    cumulative = np.cumsum(weight_array)
+    cutoff = float(cumulative[-1]) * _ttp_clamp(float(percentile), 0.0, 1.0)
+    index = int(np.searchsorted(cumulative, cutoff, side="left"))
+    index = max(0, min(index, len(value_array) - 1))
+    return float(value_array[index])
+
+
 def _ttp_should_soft_overlay_tile(tile, policy, is_large_tile, tile_area_ratio, large_tile_area_threshold):
     policy = str(policy or "safe_auto")
     if policy in ("strict_layer", "replace_object") or is_large_tile:
         return False
+    recommended_mode = str(tile.get("recommended_composite_mode", "") or "").lower()
+    if recommended_mode == "soft_overlay":
+        return True
     text = _ttp_tile_search_text(tile)
     if _ttp_is_context_tile_text(text):
         return False
@@ -1631,9 +1808,14 @@ def _ttp_tile_effective_scale_values(tile_meta, tile_images):
     if len(tile_images) != len(tiles_info):
         raise ValueError(f"tile images ({len(tile_images)}) do not match tile_meta tiles ({len(tiles_info)})")
 
+    original_width, original_height = [int(value) for value in tile_meta.get("original_size", [0, 0])]
+    original_area = max(1.0, float(original_width) * float(original_height))
     scale_values = []
     x_scales = []
     y_scales = []
+    scale_weights = []
+    x_weights = []
+    y_weights = []
     lines = []
     for index, tile in enumerate(tiles_info):
         _, _, sw, sh = tile["sample_box"]
@@ -1649,12 +1831,16 @@ def _ttp_tile_effective_scale_values(tile_meta, tile_images):
         x_scales.append(scale_x)
         y_scales.append(scale_y)
         scale_values.extend([scale_x, scale_y])
+        scale_weight = _ttp_semantic_scale_weight(tile, original_area)
+        scale_weights.extend([scale_weight, scale_weight])
+        x_weights.append(scale_weight)
+        y_weights.append(scale_weight)
         label = str(tile.get("label", tile.get("name", f"tile_{index}")) or f"tile_{index}")
-        lines.append(f"{index}:{label} {tile_width}x{tile_height} sample={int(sw)}x{int(sh)} scale={scale_x:.4g}x{scale_y:.4g}")
-    return scale_values, x_scales, y_scales, lines
+        lines.append(f"{index}:{label} {tile_width}x{tile_height} sample={int(sw)}x{int(sh)} scale={scale_x:.4g}x{scale_y:.4g} weight={scale_weight:.4g}")
+    return scale_values, x_scales, y_scales, scale_weights, x_weights, y_weights, lines
 
 
-def _ttp_select_scale_value(values, strategy="median"):
+def _ttp_select_scale_value(values, strategy="median", weights=None):
     if not values:
         return 1.0
     array = np.asarray(values, dtype=np.float32)
@@ -1665,6 +1851,8 @@ def _ttp_select_scale_value(values, strategy="median"):
         value = float(np.min(array))
     elif strategy == "max":
         value = float(np.max(array))
+    elif strategy == "focus_weighted":
+        value = _ttp_weighted_percentile(values, weights, 0.7)
     else:
         value = float(np.median(array))
     return max(0.01, value)
@@ -1679,12 +1867,12 @@ def _ttp_estimate_smart_tile_output_size(tile_meta, tile_images, scale_strategy=
     if original_width <= 0 or original_height <= 0:
         raise ValueError("Smart Tile metadata is missing a valid original_size.")
 
-    scale_values, x_scales, y_scales, lines = _ttp_tile_effective_scale_values(tile_meta, tile_images)
-    output_scale = _ttp_select_scale_value(scale_values, scale_strategy)
+    scale_values, x_scales, y_scales, scale_weights, x_weights, y_weights, lines = _ttp_tile_effective_scale_values(tile_meta, tile_images)
+    output_scale = _ttp_select_scale_value(scale_values, scale_strategy, scale_weights)
     output_width = max(1, int(round(original_width * output_scale)))
     output_height = max(1, int(round(original_height * output_scale)))
-    scale_x = _ttp_select_scale_value(x_scales, scale_strategy)
-    scale_y = _ttp_select_scale_value(y_scales, scale_strategy)
+    scale_x = _ttp_select_scale_value(x_scales, scale_strategy, x_weights)
+    scale_y = _ttp_select_scale_value(y_scales, scale_strategy, y_weights)
     min_scale = min(scale_values) if scale_values else output_scale
     max_scale = max(scale_values) if scale_values else output_scale
     spread = max_scale - min_scale
@@ -3839,13 +4027,147 @@ class TTP_Smart_Tile_Image_Upscale_Prep_Experimental:
         return (upscaled, info)
 
 
+class TTP_Smart_Tile_Semantic_Rank_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "tile_set": ("TTP_SMART_TILE_SET",),
+                "rank_policy": (["portrait", "balanced", "product", "text"], {"default": "portrait"}),
+                "apply_composite_rank": ("BOOLEAN", {"default": True}),
+                "face_bias": ("FLOAT", {"default": 1.5, "min": 0.1, "max": 4.0, "step": 0.05}),
+                "detail_bias": ("FLOAT", {"default": 1.2, "min": 0.1, "max": 4.0, "step": 0.05}),
+                "text_bias": ("FLOAT", {"default": 1.4, "min": 0.1, "max": 4.0, "step": 0.05}),
+                "background_weight": ("FLOAT", {"default": 0.25, "min": 0.0, "max": 1.0, "step": 0.05}),
+                "small_tile_bias": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 2.0, "step": 0.05}),
+            },
+        }
+
+    RETURN_TYPES = ("TTP_SMART_TILE_SET", "STRING")
+    RETURN_NAMES = ("tile_set", "semantic_report")
+    FUNCTION = "rank_tiles"
+    CATEGORY = "TTP/Smart Tile"
+
+    def rank_tiles(
+        self,
+        tile_set,
+        rank_policy="portrait",
+        apply_composite_rank=True,
+        face_bias=1.5,
+        detail_bias=1.2,
+        text_bias=1.4,
+        background_weight=0.25,
+        small_tile_bias=0.35,
+    ):
+        if not isinstance(tile_set, dict) or tile_set.get("type") != "ttp_smart_tile_set":
+            raise ValueError("tile_set must come from TTP Smart Tile Interactive Crop, QwenVL Prompt Set Builder, or Loop Collect.")
+        ranked_tile_set = _ttp_clone_tile_set(tile_set)
+        tile_meta = ranked_tile_set.get("tile_meta", {})
+        tiles_info = tile_meta.get("tiles", [])
+        original_width, original_height = [int(value) for value in tile_meta.get("original_size", ranked_tile_set.get("original_size", [0, 0]))]
+        original_area = max(1.0, float(original_width) * float(original_height))
+        policy = str(rank_policy or "portrait")
+        background_weight = _ttp_clamp(float(background_weight), 0.0, 1.0)
+        small_tile_bias = max(0.0, float(small_tile_bias))
+        reports = []
+
+        for index, tile in enumerate(tiles_info):
+            category = _ttp_tile_semantic_category(tile)
+            role = _ttp_semantic_role_from_category(category)
+            area_ratio = _ttp_tile_area_ratio(tile, original_area)
+            base_score = _ttp_semantic_base_score(category, policy)
+            if category in ("face", "eyes", "face_detail"):
+                base_score *= max(0.1, float(face_bias))
+            if category in ("detail", "hands", "eyes", "face_detail"):
+                base_score *= max(0.1, float(detail_bias))
+            if category == "text":
+                base_score *= max(0.1, float(text_bias))
+            if category != "background":
+                base_score += (1.0 - area_ratio) * small_tile_bias
+            if tile.get("object_mask"):
+                base_score += 0.35
+            if tile.get("score") is not None:
+                base_score += _ttp_safe_float(tile.get("score"), 0.0, 0.0, 1.0) * 0.5
+
+            scale_weight = _ttp_semantic_scale_weight(
+                {
+                    **tile,
+                    "semantic_category": category,
+                    "recommended_scale_weight": None,
+                },
+                original_area,
+            )
+            if category == "background":
+                scale_weight = background_weight
+
+            if category == "background":
+                recommended_layer = 0.0
+                recommended_priority = 10.0
+                recommended_occlusion = 0.0
+                composite_mode = "context"
+            elif category in ("eyes", "face_detail", "text"):
+                recommended_layer = 7.0
+                recommended_priority = 160.0
+                recommended_occlusion = 18000.0 + base_score * 1000.0
+                composite_mode = "soft_overlay"
+            elif category in ("face", "hands", "detail"):
+                recommended_layer = 5.0
+                recommended_priority = 140.0
+                recommended_occlusion = 15000.0 + base_score * 1000.0
+                composite_mode = "soft_overlay"
+            elif category in ("subject", "object"):
+                recommended_layer = 3.0
+                recommended_priority = 90.0
+                recommended_occlusion = 6000.0 + base_score * 500.0
+                composite_mode = "replace"
+            else:
+                recommended_layer = 1.0
+                recommended_priority = 50.0
+                recommended_occlusion = 1000.0 + base_score * 250.0
+                composite_mode = "blend"
+
+            tile["semantic_category"] = category
+            tile["semantic_role"] = role
+            tile["semantic_score"] = round(float(base_score), 4)
+            tile["recommended_scale_weight"] = round(float(scale_weight), 4)
+            tile["recommended_layer"] = round(float(recommended_layer), 4)
+            tile["recommended_priority"] = round(float(recommended_priority), 4)
+            tile["recommended_occlusion_priority"] = round(float(recommended_occlusion), 4)
+            tile["recommended_composite_mode"] = composite_mode
+
+            if bool(apply_composite_rank):
+                if category == "background":
+                    tile["layer"] = min(float(tile.get("layer", 0.0)), recommended_layer)
+                    tile["priority"] = min(float(tile.get("priority", 50.0)), recommended_priority)
+                    tile["occlusion_priority"] = min(float(tile.get("occlusion_priority", 0.0)), recommended_occlusion)
+                else:
+                    tile["layer"] = max(float(tile.get("layer", 0.0)), recommended_layer)
+                    tile["priority"] = max(float(tile.get("priority", 50.0)), recommended_priority)
+                    tile["occlusion_priority"] = max(float(tile.get("occlusion_priority", 0.0)), recommended_occlusion)
+
+            label = str(tile.get("label", tile.get("name", f"tile_{index}")) or f"tile_{index}")
+            reports.append((base_score, f"{index}:{label} category={category} role={role} area={area_ratio:.4g} score={base_score:.4g} scale_weight={scale_weight:.4g} mode={composite_mode}"))
+
+        reports.sort(key=lambda item: item[0], reverse=True)
+        header = (
+            f"semantic_rank policy={policy} tiles={len(tiles_info)} "
+            f"apply_composite_rank={bool(apply_composite_rank)}"
+        )
+        report = header
+        if reports:
+            report += "\n" + "\n".join(line for _score, line in reports[:64])
+            if len(reports) > 64:
+                report += f"\n... {len(reports) - 64} more tile(s)"
+        return (ranked_tile_set, report)
+
+
 class TTP_Smart_Tile_Output_Size_Estimate_Experimental:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "tile_set": ("TTP_SMART_TILE_SET",),
-                "scale_strategy": (["median", "mean", "min", "max"], {"default": "median"}),
+                "scale_strategy": (["median", "mean", "min", "max", "focus_weighted"], {"default": "median"}),
             },
             "optional": {
                 "source_image": ("IMAGE",),
@@ -5324,6 +5646,7 @@ NODE_CLASS_MAPPINGS = {
     "TTP_Smart_Tile_Loop_Source_Experimental": TTP_Smart_Tile_Loop_Source_Experimental,
     "TTP_Smart_Tile_Loop_Collect_Experimental": TTP_Smart_Tile_Loop_Collect_Experimental,
     "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": TTP_Smart_Tile_Image_Upscale_Prep_Experimental,
+    "TTP_Smart_Tile_Semantic_Rank_Experimental": TTP_Smart_Tile_Semantic_Rank_Experimental,
     "TTP_Smart_Tile_Output_Size_Estimate_Experimental": TTP_Smart_Tile_Output_Size_Estimate_Experimental,
     "TTP_Smart_Tile_Assemble_Experimental": TTP_Smart_Tile_Assemble_Experimental,
     "TTP_Smart_Tile_Save_Final_Image_Experimental": TTP_Smart_Tile_Save_Final_Image_Experimental,
@@ -5348,6 +5671,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TTP_Smart_Tile_Loop_Source_Experimental": "TTP Smart Tile Loop Source",
     "TTP_Smart_Tile_Loop_Collect_Experimental": "TTP Smart Tile Loop Collect",
     "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": "TTP Smart Tile Image Upscale Prep",
+    "TTP_Smart_Tile_Semantic_Rank_Experimental": "TTP Smart Tile Semantic Rank",
     "TTP_Smart_Tile_Output_Size_Estimate_Experimental": "TTP Smart Tile Output Size Estimate",
     "TTP_Smart_Tile_Assemble_Experimental": "TTP Smart Tile Assemble",
     "TTP_Smart_Tile_Save_Final_Image_Experimental": "TTP Smart Tile Save Final Image",

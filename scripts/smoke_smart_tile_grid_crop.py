@@ -238,8 +238,17 @@ assert_equal(
 )
 output_size_inputs = ttp.TTP_Smart_Tile_Output_Size_Estimate_Experimental.INPUT_TYPES()
 assert_equal(output_size_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "output size estimate should accept tile sets")
-assert_equal(output_size_inputs["required"]["scale_strategy"][0], ["median", "mean", "min", "max"], "output size estimate should expose scale strategies")
+assert_equal(output_size_inputs["required"]["scale_strategy"][0], ["median", "mean", "min", "max", "focus_weighted"], "output size estimate should expose scale strategies")
 assert_equal(output_size_inputs["optional"]["done"][0], "BOOLEAN", "output size estimate should accept a loop done gate")
+semantic_rank_inputs = ttp.TTP_Smart_Tile_Semantic_Rank_Experimental.INPUT_TYPES()
+assert_equal(semantic_rank_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "semantic rank should accept Smart Tile Set")
+assert_equal(semantic_rank_inputs["required"]["rank_policy"][0], ["portrait", "balanced", "product", "text"], "semantic rank should expose rank policies")
+assert_equal("apply_composite_rank" in semantic_rank_inputs["required"], True, "semantic rank should optionally write composite rank metadata")
+assert_equal(
+    ttp.NODE_CLASS_MAPPINGS["TTP_Smart_Tile_Semantic_Rank_Experimental"],
+    ttp.TTP_Smart_Tile_Semantic_Rank_Experimental,
+    "semantic rank should be registered",
+)
 assert_equal(
     ttp.NODE_CLASS_MAPPINGS["TTP_Smart_Tile_Output_Size_Estimate_Experimental"],
     ttp.TTP_Smart_Tile_Output_Size_Estimate_Experimental,
@@ -696,6 +705,34 @@ capped_tile, capped_info = upscale_node.upscale_tile(
 assert_equal(list(capped_tile.shape[1:3]), [192, 192], "upscale prep should round down under the megapixel cap")
 assert_equal(capped_tile.shape[1] * capped_tile.shape[2] <= 40000, True, "upscale prep should stay under max megapixels after rounding")
 assert_equal("max_megapixels=0.04 capped" in capped_info, True, "upscale prep should report megapixel capping")
+semantic_node = ttp.TTP_Smart_Tile_Semantic_Rank_Experimental()
+semantic_input_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "original_size": [100, 100],
+    "tile_meta": {
+        "type": "ttp_smart_tile",
+        "original_size": [100, 100],
+        "tiles": [
+            {"name": "bg", "label": "background", "sample_box": [0, 0, 100, 100]},
+            {"name": "face", "label": "face", "caption": "portrait face", "sample_box": [20, 20, 50, 50]},
+            {"name": "eyes", "label": "eyes", "caption": "sharp eyes and eyelashes", "sample_box": [35, 35, 20, 12]},
+        ],
+    },
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (100, 100), "white")),
+        ttp.pil2tensor(Image.new("RGB", (50, 50), "white")),
+        ttp.pil2tensor(Image.new("RGB", (80, 48), "white")),
+    ],
+}
+ranked_tile_set, semantic_report = semantic_node.rank_tiles(semantic_input_tile_set)
+ranked_tiles = ranked_tile_set["tile_meta"]["tiles"]
+assert_equal(ranked_tiles[0]["semantic_category"], "background", "semantic rank should detect background tiles")
+assert_equal(ranked_tiles[1]["semantic_category"], "face", "semantic rank should detect face tiles")
+assert_equal(ranked_tiles[2]["semantic_category"], "eyes", "semantic rank should detect eye detail tiles")
+assert_equal(ranked_tiles[2]["semantic_score"] > ranked_tiles[1]["semantic_score"] > ranked_tiles[0]["semantic_score"], True, "semantic rank should score detail tiles above face and background")
+assert_equal(ranked_tiles[2]["recommended_composite_mode"], "soft_overlay", "semantic rank should recommend soft overlay for eye detail tiles")
+assert_equal(ranked_tiles[2]["occlusion_priority"] > ranked_tiles[1]["occlusion_priority"] > ranked_tiles[0]["occlusion_priority"], True, "semantic rank should write composite priority metadata")
+assert_equal("category=eyes" in semantic_report, True, "semantic rank report should include ranked categories")
 size_node = ttp.TTP_Smart_Tile_Output_Size_Estimate_Experimental()
 mixed_scale_meta = {
     "type": "ttp_smart_tile",
@@ -735,6 +772,38 @@ assert_equal("warning=mixed_tile_scales" in size_info, True, "output size estima
 min_scale, min_w, min_h, _min_x, _min_y, _min_info = size_node.estimate_output_size(mixed_scale_tile_set, scale_strategy="min")
 assert_equal(round(min_scale, 4), 2.0, "output size estimate should support min strategy")
 assert_equal([min_w, min_h], [200, 100], "output size estimate min strategy should resize final resolution")
+focus_scale_meta = {
+    "type": "ttp_smart_tile",
+    "original_size": [100, 50],
+    "tiles": [
+        {
+            "label": "background",
+            "sample_box": [0, 0, 100, 50],
+            "tile_canvas_size": [100, 50],
+            "tile_canvas_box": [0, 0, 100, 50],
+        },
+        {
+            "label": "eyes",
+            "sample_box": [25, 10, 10, 10],
+            "tile_canvas_size": [10, 10],
+            "tile_canvas_box": [0, 0, 10, 10],
+        },
+    ],
+}
+focus_scale_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "tile_meta": focus_scale_meta,
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (100, 50), "white")),
+        ttp.pil2tensor(Image.new("RGB", (40, 40), "white")),
+    ],
+}
+focus_scale, focus_w, focus_h, focus_x, focus_y, focus_info = size_node.estimate_output_size(focus_scale_tile_set, scale_strategy="focus_weighted")
+assert_equal(round(focus_scale, 4), 4.0, "focus-weighted output size should prefer high-detail tile scale")
+assert_equal([focus_w, focus_h], [400, 200], "focus-weighted output size should report focus-detail resolution")
+assert_equal(round(focus_x, 4), 4.0, "focus-weighted x scale should prefer high-detail tile scale")
+assert_equal(round(focus_y, 4), 4.0, "focus-weighted y scale should prefer high-detail tile scale")
+assert_equal("weight=" in focus_info, True, "focus-weighted info should report semantic weights")
 done_scale, done_w, done_h, _done_x, _done_y, _done_info = size_node.estimate_output_size(mixed_scale_tile_set, done=True)
 assert_equal(round(done_scale, 4), 3.0, "output size estimate should compute when done is true")
 assert_equal([done_w, done_h], [300, 150], "output size estimate done gate should preserve final resolution")
