@@ -58,6 +58,11 @@ assert(/function editorStageSize/.test(source), "tile editor should compute a fi
 assert(!/aspect-ratio:/.test(source), "tile editor should not rely on CSS aspect-ratio when the node is resized");
 assert(!/max-height:720px/.test(source), "tile editor should not clamp only stage height and distort the image");
 assert(/"object_mask"/.test(source), "tile editor should preserve SAM object masks in layout metadata");
+assert(/GRID_MASK_MODES/.test(source), "tile editor should expose grid mask inheritance modes");
+assert(/async function gridTilesWithInheritedMask/.test(source), "Grid in should be able to inherit and crop object masks");
+assert(/function cropObjectMaskForTile/.test(source), "Grid in should crop object masks per child tile");
+assert(/crop_mask_skip_empty/.test(source), "Grid in should allow skipping empty mask child tiles");
+assert(/createButton\(`Grid in T\$\{selectedIndex \+ 1\}`, async \(\) =>/.test(source), "Grid in should run asynchronously for mask cropping");
 assert(/ensurePaintMaskCanvas/.test(source), "tile editor should create a paint mask canvas");
 assert(/auto_paint_mask/.test(source), "tile editor should sync painted masks into the hidden backend input");
 assert(/Brush/.test(source), "tile editor should expose a paint brush action");

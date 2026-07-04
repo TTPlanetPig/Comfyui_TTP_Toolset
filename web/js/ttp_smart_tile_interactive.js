@@ -8,6 +8,13 @@ const MAX_GRID_AXIS = 8;
 const dragThresholdPx = 3;
 const snapGuideThresholdPx = 10;
 const STORAGE_PREFIX = "ttp_smart_tile_interactive_layout";
+const GRID_MASK_MODES = ["off", "crop_mask", "crop_mask_skip_empty"];
+const TILE_METADATA_KEYS = [
+    "name", "source", "label", "score", "layer", "object_id", "occlusion_priority",
+    "priority", "importance", "pad", "blend", "object_mask", "semantic_category",
+    "semantic_role", "semantic_score", "recommended_scale_weight", "recommended_layer",
+    "recommended_priority", "recommended_occlusion_priority", "recommended_composite_mode",
+];
 
 function widgetByName(node, name) {
     return node.widgets?.find((widget) => widget.name === name);
@@ -118,7 +125,7 @@ function normalizeAxis(node, start, end, axis) {
 
 function normalizeTile(node, raw) {
     const metadata = {};
-    for (const key of ["name", "source", "label", "score", "layer", "object_id", "occlusion_priority", "priority", "importance", "pad", "blend", "object_mask"]) {
+    for (const key of TILE_METADATA_KEYS) {
         if (raw && raw[key] !== undefined) {
             metadata[key] = raw[key];
         }
@@ -154,6 +161,163 @@ function gridTiles(node, columns, rows, bounds = { x0: 0, y0: 0, x1: 1, y1: 1 })
         }
     }
     return tiles;
+}
+
+function gridMaskMode(node) {
+    const mode = String(node.ttpSmartTileGridMaskMode ?? "crop_mask");
+    return GRID_MASK_MODES.includes(mode) ? mode : "crop_mask";
+}
+
+function objectMaskPixelBox(maskData) {
+    if (!maskData || maskData.format !== "png_base64" || !maskData.data) {
+        return null;
+    }
+    const box = Array.isArray(maskData.box) ? maskData.box : [0, 0, maskData.width ?? 0, maskData.height ?? 0];
+    const x0 = Math.round(Number(box[0]) || 0);
+    const y0 = Math.round(Number(box[1]) || 0);
+    const width = Math.max(1, Math.round(Number(box[2] ?? maskData.width) || 1));
+    const height = Math.max(1, Math.round(Number(box[3] ?? maskData.height) || 1));
+    return { x0, y0, x1: x0 + width, y1: y0 + height, width, height };
+}
+
+function loadObjectMaskImage(maskData) {
+    return new Promise((resolve, reject) => {
+        if (!maskData || maskData.format !== "png_base64" || !maskData.data) {
+            resolve(null);
+            return;
+        }
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error("Unable to decode selected tile mask."));
+        image.src = `data:image/png;base64,${maskData.data}`;
+    });
+}
+
+function maskCanvasHasForeground(canvas) {
+    const context = canvas?.getContext?.("2d", { willReadFrequently: true });
+    if (!context || !canvas.width || !canvas.height) {
+        return false;
+    }
+    const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let index = 0; index < data.length; index += 4) {
+        if (data[index] > 0 || data[index + 1] > 0 || data[index + 2] > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function inheritedGridTileMetadata(sourceTile, childIndex) {
+    const metadata = {};
+    for (const key of TILE_METADATA_KEYS) {
+        if (key !== "name" && key !== "object_mask" && sourceTile?.[key] !== undefined) {
+            metadata[key] = sourceTile[key];
+        }
+    }
+    const baseName = String(sourceTile?.name || sourceTile?.label || "tile").replace(/\s+/g, "_");
+    metadata.name = `${baseName}_grid_${childIndex + 1}`;
+    if (sourceTile?.label && !metadata.label) {
+        metadata.label = sourceTile.label;
+    }
+    if (sourceTile?.source && !metadata.source) {
+        metadata.source = sourceTile.source;
+    }
+    return metadata;
+}
+
+function backgroundGridTileMetadata(childIndex) {
+    return {
+        name: `grid_empty_${childIndex + 1}`,
+        source: "grid_empty_mask",
+        label: "background gap",
+        priority: 5,
+        importance: 0.35,
+        layer: 0,
+        object_id: 0,
+        occlusion_priority: 0,
+    };
+}
+
+function cropObjectMaskForTile(node, maskImage, maskBox, tile) {
+    const rect = tilePixelRect(node, tile);
+    if (!rect || !maskImage || !maskBox) {
+        return null;
+    }
+    const tileX1 = rect.x0 + rect.width;
+    const tileY1 = rect.y0 + rect.height;
+    const x0 = Math.max(rect.x0, maskBox.x0);
+    const y0 = Math.max(rect.y0, maskBox.y0);
+    const x1 = Math.min(tileX1, maskBox.x1);
+    const y1 = Math.min(tileY1, maskBox.y1);
+    const width = Math.max(0, x1 - x0);
+    const height = Math.max(0, y1 - y0);
+    if (width <= 0 || height <= 0) {
+        return null;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) {
+        return null;
+    }
+    context.drawImage(
+        maskImage,
+        x0 - maskBox.x0,
+        y0 - maskBox.y0,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height
+    );
+    if (!maskCanvasHasForeground(canvas)) {
+        return null;
+    }
+    return {
+        format: "png_base64",
+        box: [Math.round(x0), Math.round(y0), Math.round(width), Math.round(height)],
+        width: Math.round(width),
+        height: Math.round(height),
+        data: canvas.toDataURL("image/png").split(",", 2)[1],
+    };
+}
+
+async function gridTilesWithInheritedMask(node, sourceTile, columns, rows, mode) {
+    const children = gridTiles(node, columns, rows, sourceTile);
+    if (mode === "off") {
+        return { tiles: children, cropped: 0, skipped: 0, emptied: 0 };
+    }
+
+    const maskData = sourceTile?.object_mask;
+    const maskBox = objectMaskPixelBox(maskData);
+    const maskImage = maskBox ? await loadObjectMaskImage(maskData) : null;
+    const result = [];
+    let cropped = 0;
+    let skipped = 0;
+    let emptied = 0;
+
+    for (const [index, child] of children.entries()) {
+        const metadata = inheritedGridTileMetadata(sourceTile, index);
+        const nextTile = { ...child, ...metadata };
+        const childMask = cropObjectMaskForTile(node, maskImage, maskBox, child);
+        if (childMask) {
+            nextTile.object_mask = childMask;
+            cropped += 1;
+        } else if (maskBox) {
+            delete nextTile.object_mask;
+            if (mode === "crop_mask_skip_empty") {
+                skipped += 1;
+                continue;
+            }
+            Object.assign(nextTile, backgroundGridTileMetadata(index));
+            emptied += 1;
+        }
+        result.push(normalizeTile(node, nextTile));
+    }
+
+    return { tiles: result, cropped, skipped, emptied };
 }
 
 function sourceStorageKey(node) {
@@ -591,6 +755,29 @@ function createNumberInput(value, min, max) {
         "padding:4px 5px",
     ].join(";");
     return input;
+}
+
+function createSelect(value, options) {
+    const select = document.createElement("select");
+    for (const option of options) {
+        const item = document.createElement("option");
+        item.value = option.value;
+        item.textContent = option.label;
+        select.append(item);
+    }
+    select.value = value;
+    select.style.cssText = [
+        "box-sizing:border-box",
+        "height:28px",
+        "font:inherit",
+        "font-size:12px",
+        "color:#e5e7eb",
+        "background:#172033",
+        "border:1px solid rgba(226,232,240,.35)",
+        "border-radius:4px",
+        "padding:3px 5px",
+    ].join(";");
+    return select;
 }
 
 function parseAnnotatedImageName(value) {
@@ -1344,11 +1531,18 @@ function renderEditor(node) {
     gridLabel.style.cssText = "opacity:.78;";
     const gridColumns = createNumberInput(node.ttpSmartTileGridColumns ?? 2, 1, MAX_GRID_AXIS);
     const gridRows = createNumberInput(node.ttpSmartTileGridRows ?? 2, 1, MAX_GRID_AXIS);
+    const gridMaskSelect = createSelect(gridMaskMode(node), [
+        { value: "off", label: "off" },
+        { value: "crop_mask", label: "crop" },
+        { value: "crop_mask_skip_empty", label: "skip empty" },
+    ]);
     const updateGridValues = () => {
         node.ttpSmartTileGridColumns = Math.max(1, Math.min(MAX_GRID_AXIS, Math.round(Number(gridColumns.value) || 1)));
         node.ttpSmartTileGridRows = Math.max(1, Math.min(MAX_GRID_AXIS, Math.round(Number(gridRows.value) || 1)));
+        node.ttpSmartTileGridMaskMode = gridMaskSelect.value;
         gridColumns.value = String(node.ttpSmartTileGridColumns);
         gridRows.value = String(node.ttpSmartTileGridRows);
+        gridMaskSelect.value = gridMaskMode(node);
     };
     const refreshGridValues = () => {
         updateGridValues();
@@ -1364,6 +1558,8 @@ function renderEditor(node) {
         gridColumns,
         document.createTextNode("x"),
         gridRows,
+        document.createTextNode("Mask"),
+        gridMaskSelect,
         createButton("Replace grid", () => {
             updateGridValues();
             const nextTiles = gridTiles(node, node.ttpSmartTileGridColumns, node.ttpSmartTileGridRows);
@@ -1371,10 +1567,30 @@ function renderEditor(node) {
             writeLayout(node, nextTiles, 0);
             renderEditor(node);
         }, gridCount > MAX_TILES),
-        createButton(`Grid in T${selectedIndex + 1}`, () => {
+        createButton(`Grid in T${selectedIndex + 1}`, async () => {
             updateGridValues();
             const selectedTile = tiles[selectedIndex] ?? { x0: 0, y0: 0, x1: 1, y1: 1 };
-            const replacement = gridTiles(node, node.ttpSmartTileGridColumns, node.ttpSmartTileGridRows, selectedTile);
+            const maskMode = gridMaskMode(node);
+            const replacementInfo = await gridTilesWithInheritedMask(
+                node,
+                selectedTile,
+                node.ttpSmartTileGridColumns,
+                node.ttpSmartTileGridRows,
+                maskMode
+            ).catch((error) => {
+                node.ttpSmartTileStatus = error?.message || "Grid mask split failed.";
+                return null;
+            });
+            if (!replacementInfo) {
+                renderEditor(node);
+                return;
+            }
+            const replacement = replacementInfo.tiles;
+            if (!replacement.length) {
+                node.ttpSmartTileStatus = "Grid mask split skipped every empty tile.";
+                renderEditor(node);
+                return;
+            }
             if (tiles.length - 1 + replacement.length > MAX_TILES) {
                 node.ttpSmartTileStatus = `Grid would create ${tiles.length - 1 + replacement.length} tiles; max is ${MAX_TILES}.`;
                 renderEditor(node);
@@ -1385,7 +1601,10 @@ function renderEditor(node) {
                 ...replacement,
                 ...tiles.slice(selectedIndex + 1),
             ];
-            node.ttpSmartTileStatus = "";
+            const maskStatus = replacementInfo.cropped
+                ? ` / mask crops ${replacementInfo.cropped}${replacementInfo.skipped ? `, skipped ${replacementInfo.skipped}` : ""}${replacementInfo.emptied ? `, empty ${replacementInfo.emptied}` : ""}`
+                : "";
+            node.ttpSmartTileStatus = maskStatus ? `Grid split${maskStatus}` : "";
             writeLayout(node, nextTiles, selectedIndex);
             renderEditor(node);
         }, subdivideCount > MAX_TILES)

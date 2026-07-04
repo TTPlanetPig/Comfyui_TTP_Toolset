@@ -963,6 +963,26 @@ assert_equal("object_mask" in masked_auto_meta[0], True, "auto layout should pre
 mask_array = ttp._ttp_tile_object_mask_array(masked_auto_meta[0], masked_auto_meta[0]["sample_box"][2], masked_auto_meta[0]["sample_box"][3], "mask_feather", 32)
 assert_equal(mask_array.shape[2], 1, "decoded object mask should be a single-channel weight map")
 assert_equal(float(mask_array.max()) > 0.5, True, "decoded object mask should keep foreground weight")
+semantic_mask_layout = json.dumps({
+    "tiles": [{
+        "name": "person_grid_1",
+        "x0": 0.2,
+        "y0": 0.2,
+        "x1": 0.5,
+        "y1": 0.6,
+        "label": "person",
+        "semantic_category": "subject",
+        "recommended_scale_weight": 1.75,
+        "recommended_composite_mode": "replace",
+        "recommended_occlusion_priority": 6200,
+        "object_mask": masked_auto_meta[0]["object_mask"],
+    }],
+}, separators=(",", ":"))
+semantic_mask_meta = ttp._ttp_parse_smart_tile_layout(semantic_mask_layout, 900, 600)
+assert_equal(semantic_mask_meta[0]["semantic_category"], "subject", "interactive parser should preserve inherited semantic category")
+assert_equal(round(semantic_mask_meta[0]["recommended_scale_weight"], 2), 1.75, "interactive parser should preserve inherited scale weight")
+assert_equal(semantic_mask_meta[0]["recommended_composite_mode"], "replace", "interactive parser should preserve inherited composite mode")
+assert_equal("object_mask" in semantic_mask_meta[0], True, "interactive parser should preserve inherited cropped object mask")
 
 paint_mask = Image.new("L", (64, 48), 0)
 for x in range(8, 22):

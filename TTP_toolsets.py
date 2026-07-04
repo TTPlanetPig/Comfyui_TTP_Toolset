@@ -452,6 +452,18 @@ def _ttp_normalize_tile_box(tile, image_width, image_height, defaults):
     }
     if isinstance(tile.get("object_mask"), dict):
         normalized["object_mask"] = dict(tile["object_mask"])
+    for key in ("caption", "prompt", "negative", "semantic_category", "semantic_role", "recommended_composite_mode"):
+        if key in tile:
+            normalized[key] = str(tile.get(key, ""))
+    for key in (
+        "semantic_score",
+        "recommended_scale_weight",
+        "recommended_layer",
+        "recommended_priority",
+        "recommended_occlusion_priority",
+    ):
+        if key in tile:
+            normalized[key] = _ttp_safe_float(tile.get(key), 0.0)
     return normalized
 
 
