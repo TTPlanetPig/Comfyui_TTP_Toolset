@@ -766,6 +766,12 @@ function fillTileGaps(node, tiles, maxTiles = MAX_TILES) {
     };
 }
 
+function autoMaxTiles(node) {
+    const widget = widgetByName(node, "auto_max_tiles");
+    const value = Math.round(Number(widget?.value ?? MAX_TILES) || MAX_TILES);
+    return Math.max(1, Math.min(MAX_TILES, value));
+}
+
 function tilePixelRect(node, tile) {
     const size = imageSourceSize(node);
     if (!size) {
@@ -952,7 +958,7 @@ function applyInferenceResult(detail) {
         try {
             const layout = JSON.parse(detail.layout_json);
             if (Array.isArray(layout?.tiles) && layout.tiles.length) {
-                const filled = fillTileGaps(node, layout.tiles);
+                const filled = fillTileGaps(node, layout.tiles, autoMaxTiles(node));
                 writeLayout(node, filled.tiles, 0);
                 if (filled.added > 0) {
                     statusParts.push(`Auto Tile added ${filled.added} gap tile(s).`);

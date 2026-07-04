@@ -114,6 +114,8 @@ By default, `TTP Smart Tile Assemble` uses `assemble_mode=final_only`. Connect `
 
 For QwenVL3, `TTP Smart Tile Interactive Crop` does not read `.safetensors` directly. Add `TTP QwenVL3 Local Loader`, choose the QwenVL model file, then connect its `qwen_vl_model` output into Interactive Crop.
 
+`auto_max_tiles` limits the total Auto Tile layout after automatic gap filling, so detected objects and generated background gap tiles stay within the same cap.
+
 #### **Per-Tile Prompts**
 
 For manual prompt workflows, connect `TTP Smart Tile Loop Source.prompt` to your text encoder path. For automatic prompt workflows, place `TTP Smart Tile QwenVL Prompt Set Builder` before the loop:
