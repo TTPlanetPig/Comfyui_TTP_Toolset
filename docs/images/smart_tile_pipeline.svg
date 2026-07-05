@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-labelledby="title desc">
+  <title id="title">Smart Tile loop pipeline</title>
+  <desc id="desc">A source image is split into smart tiles, optionally tagged and ranked, processed one tile at a time, collected, assembled, and saved.</desc>
+  <rect width="1280" height="520" fill="#111827"/>
+  <style>
+    .title{font:700 34px Arial,sans-serif;fill:#f8fafc}
+    .sub{font:400 17px Arial,sans-serif;fill:#cbd5e1}
+    .box{fill:#1f2937;stroke:#64748b;stroke-width:2}
+    .hot{fill:#0f3b46;stroke:#38bdf8;stroke-width:3}
+    .text{font:700 18px Arial,sans-serif;fill:#f8fafc}
+    .small{font:400 14px Arial,sans-serif;fill:#cbd5e1}
+    .arrow{stroke:#94a3b8;stroke-width:3;fill:none;marker-end:url(#arrow)}
+    .badge{fill:#334155;stroke:#64748b;stroke-width:1}
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+  <text x="44" y="58" class="title">TTP Smart Tile: variable-size tiled img2img loop</text>
+  <text x="44" y="88" class="sub">Split by visual importance, process each tile, then assemble once with masks, priorities, feathering, and optional alignment.</text>
+
+  <rect x="46" y="150" width="150" height="88" rx="8" class="box"/>
+  <text x="72" y="184" class="text">Source Image</text>
+  <text x="72" y="210" class="small">Load Image or</text>
+  <text x="72" y="230" class="small">connected IMAGE</text>
+
+  <path d="M196 194 H242" class="arrow"/>
+  <rect x="250" y="130" width="185" height="128" rx="8" class="hot"/>
+  <text x="279" y="166" class="text">Interactive Crop</text>
+  <text x="279" y="194" class="small">manual grid</text>
+  <text x="279" y="214" class="small">painted mask</text>
+  <text x="279" y="234" class="small">SAM3.1 / QwenVL3</text>
+
+  <path d="M435 194 H482" class="arrow"/>
+  <rect x="490" y="120" width="170" height="148" rx="8" class="box"/>
+  <text x="517" y="158" class="text">Prompt + Rank</text>
+  <text x="517" y="186" class="small">QwenVL prompt set</text>
+  <text x="517" y="206" class="small">semantic rank</text>
+  <text x="517" y="226" class="small">face / eyes / text</text>
+  <text x="517" y="246" class="small">priority metadata</text>
+
+  <path d="M660 194 H706" class="arrow"/>
+  <rect x="714" y="130" width="164" height="128" rx="8" class="hot"/>
+  <text x="744" y="166" class="text">Loop Source</text>
+  <text x="744" y="194" class="small">outputs one tile</text>
+  <text x="744" y="214" class="small">plus tile prompt</text>
+  <text x="744" y="234" class="small">and loop state</text>
+
+  <path d="M878 194 H924" class="arrow"/>
+  <rect x="932" y="130" width="150" height="128" rx="8" class="box"/>
+  <text x="962" y="166" class="text">Sampler</text>
+  <text x="962" y="194" class="small">VAE Encode</text>
+  <text x="962" y="214" class="small">KSampler</text>
+  <text x="962" y="234" class="small">VAE Decode</text>
+
+  <path d="M1007 258 V318 H810 V284" class="arrow"/>
+  <rect x="714" y="320" width="164" height="112" rx="8" class="box"/>
+  <text x="744" y="356" class="text">Loop Collect</text>
+  <text x="744" y="384" class="small">stores processed</text>
+  <text x="744" y="404" class="small">tiles until done</text>
+
+  <path d="M714 376 H660" class="arrow"/>
+  <rect x="490" y="320" width="170" height="112" rx="8" class="box"/>
+  <text x="520" y="356" class="text">Size Estimate</text>
+  <text x="520" y="384" class="small">final scale from</text>
+  <text x="520" y="404" class="small">processed tiles</text>
+
+  <path d="M490 376 H436" class="arrow"/>
+  <rect x="250" y="320" width="185" height="112" rx="8" class="hot"/>
+  <text x="297" y="356" class="text">Assemble</text>
+  <text x="279" y="384" class="small">final-only composite</text>
+  <text x="279" y="404" class="small">mask, blend, align</text>
+
+  <path d="M250 376 H198" class="arrow"/>
+  <rect x="46" y="320" width="150" height="112" rx="8" class="box"/>
+  <text x="85" y="356" class="text">Save</text>
+  <text x="72" y="384" class="small">final image only</text>
+  <text x="72" y="404" class="small">with workflow</text>
+
+  <rect x="950" y="348" width="244" height="54" rx="8" class="badge"/>
+  <text x="976" y="371" class="small">Recommended:</text>
+  <text x="976" y="392" class="small">assemble_mode = final_only</text>
+</svg>

@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="500" viewBox="0 0 1280 500" role="img" aria-labelledby="title desc">
+  <title id="title">Smart Tile automatic detection modes</title>
+  <desc id="desc">SAM3.1 and QwenVL3 connect to Smart Tile Interactive Crop through different model inputs.</desc>
+  <rect width="1280" height="500" fill="#0f172a"/>
+  <style>
+    .title{font:700 34px Arial,sans-serif;fill:#f8fafc}
+    .sub{font:400 17px Arial,sans-serif;fill:#cbd5e1}
+    .box{fill:#1e293b;stroke:#64748b;stroke-width:2}
+    .sam{fill:#103344;stroke:#22d3ee;stroke-width:3}
+    .qwen{fill:#2f2a12;stroke:#facc15;stroke-width:3}
+    .crop{fill:#143523;stroke:#4ade80;stroke-width:3}
+    .text{font:700 19px Arial,sans-serif;fill:#f8fafc}
+    .small{font:400 14px Arial,sans-serif;fill:#cbd5e1}
+    .arrow{stroke:#94a3b8;stroke-width:3;fill:none;marker-end:url(#arrow)}
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+  <text x="44" y="58" class="title">Auto Tile model inputs</text>
+  <text x="44" y="88" class="sub">Interactive Crop does not load Qwen files directly. Use the loader nodes and connect the model objects.</text>
+
+  <rect x="70" y="150" width="250" height="104" rx="8" class="sam"/>
+  <text x="100" y="187" class="text">SAM3 / SAM3.1 Model</text>
+  <text x="100" y="216" class="small">official ComfyUI SAM3 model</text>
+  <text x="100" y="236" class="small">connect to vision_model</text>
+
+  <rect x="70" y="300" width="250" height="104" rx="8" class="box"/>
+  <text x="100" y="337" class="text">CLIP or Conditioning</text>
+  <text x="100" y="366" class="small">auto_prompt is encoded by CLIP</text>
+  <text x="100" y="386" class="small">or connect vision_conditioning</text>
+
+  <path d="M320 202 H450" class="arrow"/>
+  <path d="M320 352 H450" class="arrow"/>
+
+  <rect x="460" y="190" width="300" height="174" rx="8" class="crop"/>
+  <text x="507" y="232" class="text">TTP Smart Tile Interactive Crop</text>
+  <text x="507" y="266" class="small">auto_detect_mode = sam3.1</text>
+  <text x="507" y="288" class="small">or auto_detect_mode = qwenvl3</text>
+  <text x="507" y="310" class="small">click Auto Tile</text>
+  <text x="507" y="332" class="small">layout_json is updated on success</text>
+
+  <path d="M760 276 H908" class="arrow"/>
+
+  <rect x="920" y="132" width="280" height="112" rx="8" class="qwen"/>
+  <text x="950" y="170" class="text">QwenVL3 Local Loader</text>
+  <text x="950" y="200" class="small">select models/text_encoders/*.safetensors</text>
+  <text x="950" y="220" class="small">connect qwen_vl_model</text>
+
+  <rect x="920" y="292" width="280" height="112" rx="8" class="box"/>
+  <text x="950" y="330" class="text">QwenVL3 bbox JSON</text>
+  <text x="950" y="360" class="small">face, eyes, hands, text, detail</text>
+  <text x="950" y="380" class="small">large single boxes are split</text>
+</svg>
