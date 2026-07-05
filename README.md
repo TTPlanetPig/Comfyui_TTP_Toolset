@@ -1,38 +1,20 @@
-# **Amazing Upscale Node Workflow for DIT Model**
+# **ComfyUI TTP Toolset**
 
-This workflow is designed for **simple logic amazing upscale nodes** in the **DIT model**. It supports common applications for **Flux**, **Hunyuan**, and **SD3**. The workflow tiles the initial image into smaller pieces, uses an image-interrogator to extract prompts for each tile, and performs an accurate upscale process. This approach minimizes hallucinations and ensures proper condition handling.
+ComfyUI TTP Toolset is a collection of tiled upscale, Smart Tile, video sampler, coordinate, and conditioning helper nodes. The current main feature is **Smart Tile 2.0**, an object-aware tiled img2img workflow with automatic layout, per-tile prompts, loop processing, semantic priority, mask-aware assembly, and final-only saving.
 
-We hope you enjoy using it!
+ComfyUI TTP Toolset 是一组围绕分块放大、Smart Tile、视频采样、坐标处理和条件处理的 ComfyUI 节点集合。当前主推功能是 **Smart Tile 2.0**：它支持语义自动分块、逐 tile 提示词、循环采样、语义层级、蒙版拼合和只保存最终结果。
 
-## **What's New**
+## **Feature Blocks / 功能模块**
 
-### **TeaCache Sampler Integration for Hunyuan Video**
+| Feature block / 功能块 | Status / 状态 | What it is for / 用途 |
+|---|---|---|
+| **Smart Tile 2.0** | Current main feature / 当前主推 | Object-aware variable-size tile workflow for detail img2img upscale. / 面向细节重绘放大的语义可变尺寸分块流程。 |
+| **TTP Tile 1.0** | Legacy workflow / 旧版流程 | Fixed-grid image tiling and assembly for classic upscale workflows. / 传统固定网格切图、批处理和拼回流程。 |
+| **TeaCache for Hunyuan Video** | Extra tool / 额外工具 | Faster Hunyuan Video sampling with TeaCache. / 使用 TeaCache 加速 Hunyuan Video 采样。 |
+| **Coordinate and conditioning utilities** | Helper nodes / 辅助节点 | Coordinate splitting, condition batching, and condition merging. / 坐标拆分、条件批处理和条件合并。 |
+| **LTX workflow examples** | Example workflows / 示例工作流 | First/last frame and middle-frame control examples. / 首尾帧与中间帧控制示例。 |
 
-Thanks to the contributions from the TeaCache code repository ([ali-vilab/TeaCache](https://github.com/ali-vilab/TeaCache)) and code references from [facok/ComfyUI-TeaCacheHunyuanVideo](https://github.com/facok/ComfyUI-TeaCacheHunyuanVideo), we’ve added support for the **TeaCache sampler**.
-
-- **How to Use:**
-  Replace the `samplercustomadvanced` node in the official workflow with the TeaCache sampler node. Adjust the acceleration rate as needed to start using it.
-  
-- **Performance:**
-  In testing with an NVIDIA 4090, rendering a 720×480 resolution video with 65 frames took only 55 seconds using a speedup factor of `x2.1`. This is approximately twice as fast as the original method.
-
-- **Caution:**
-  While the TeaCache sampler significantly accelerates processing, it may reduce image quality and dynamic effects. Use with discretion.
-
-- **Precision Support:**
-  Supports `bf16` and `fp8`.
-  
-![image](https://github.com/user-attachments/assets/9e890a64-7502-4e1f-8739-15748efc1768)
-
-
-https://github.com/user-attachments/assets/af06b9d3-9c84-4a83-ba90-eb4ec4bb2e99
-
-
----
-
-## **Instructions**
-
-### **Smart Tile Workflow**
+## **Smart Tile 2.0: Object-Aware Tile Loop / 语义分块循环**
 
 **Smart Tile** is an object-aware tiled img2img workflow for ComfyUI. Instead of cutting every image into equal squares, it lets you build variable-size tiles around visual structure: face, eyes, hands, text, subject, clothing, foreground details, and background/context regions.
 
@@ -264,6 +246,13 @@ Coordinates can be pixel values or normalized values from `0.0` to `1.0`. A rect
 
 For standard grid layouts, edge tiles are expanded inward with real source pixels when needed so the ComfyUI `IMAGE` batch has a consistent size without fake outer padding. Irregular manual layouts with uncovered gaps may still need transport padding because a single `IMAGE` batch cannot contain mixed image sizes.
 
+## **TTP Tile 1.0: Fixed-Grid Upscale Workflow / 旧版固定网格放大流程**
+
+TTP Tile 1.0 is the original fixed-grid upscale workflow. It cuts an image into equal-size tiles, processes them as a batch, then assembles them back into the original layout. This path is still useful for classic Flux, Hunyuan, SD3, and ControlNet Tile upscale workflows where a regular grid is enough.
+
+TTP Tile 1.0 是这个项目最早的固定网格分块放大流程。它把图片切成等尺寸 tile，批量处理后再按原始位置拼回去。对于传统 Flux、Hunyuan、SD3、ControlNet Tile 等固定网格放大场景，它依然很实用。
+
+
 ### **1. Image Tile Batch Node**
 This node cuts an image into pieces automatically based on your specified width and height. It also records the necessary information for further processing.
 
@@ -312,34 +301,7 @@ For example: A width factor of `2` and a height factor of `3` will divide the im
 
 ---
 
-### **4. Coordinate Splitter Node**
-This node converts position information into coordinates and connects them to the corresponding positions.
-
-**Node View**:
-
-![Coordinate Splitter Node](https://github.com/user-attachments/assets/25b73335-db42-4110-8138-6af07e45a8d8)
-
----
-
-### **5. Cond to Batch Node**
-This node converts condition lists into batches. It is reserved for future functionality expansion and connects to the conditions.
-
-**Node View**:
-
-![Cond to Batch Node](https://github.com/user-attachments/assets/f92a9ddc-1a98-4687-8875-03802e916dd4)
-
----
-
-### **6. Condition Merge Node**
-This node merges all tiled conditions into one and prepares them for building the final image. It connects to the **Coordinate Splitter Node** and **Cond to Batch Node**.
-
-**Node View**:
-
-![Condition Merge Node](https://github.com/user-attachments/assets/3039c8a3-8284-4b71-a9de-4120723258c7)
-
----
-
-## **Examples**
+## **TTP Tile 1.0 Examples / 旧版示例**
 
 ### **Pixel Example (Recommended)**
 
@@ -364,6 +326,60 @@ This workflow supports **ControlNet Tile** for enhanced upscaling. Here's an exa
 ![Hunyuan Example Workflow](https://github.com/TTPlanetPig/Comfyui_TTP_Toolset/blob/main/examples/Hunyuan_8Mega_Pixel_image_upscale_process_with_tile_cn.png)
 
 ---
+
+## **Other Tools / 其他功能**
+
+This section collects smaller tools and workflow helpers that are not part of the new Smart Tile 2.0 loop or the legacy TTP Tile 1.0 fixed-grid pipeline.
+
+这一部分收纳不属于 Smart Tile 2.0 主流程、也不属于 TTP Tile 1.0 固定网格主流程的零散工具和辅助工作流。
+
+### **TeaCache Sampler for Hunyuan Video / Hunyuan Video TeaCache 采样器**
+
+Thanks to the TeaCache repository ([ali-vilab/TeaCache](https://github.com/ali-vilab/TeaCache)) and references from [facok/ComfyUI-TeaCacheHunyuanVideo](https://github.com/facok/ComfyUI-TeaCacheHunyuanVideo), this toolset includes TeaCache sampler support for Hunyuan Video workflows.
+
+TeaCache can speed up Hunyuan Video sampling. In earlier testing on an NVIDIA 4090, a 720x480 video with 65 frames took about 55 seconds with a speedup factor around `x2.1`. Quality and motion can change when acceleration is too high, so tune it carefully.
+
+本项目参考 TeaCache 仓库和相关 ComfyUI 实现，为 Hunyuan Video 工作流提供 TeaCache 采样器支持。它可以明显加速视频采样，但加速倍率过高时可能影响画质和动态效果，需要按项目调节。
+
+![TeaCache sampler example](https://github.com/user-attachments/assets/9e890a64-7502-4e1f-8739-15748efc1768)
+
+https://github.com/user-attachments/assets/af06b9d3-9c84-4a83-ba90-eb4ec4bb2e99
+
+### **LTX Frame Control Workflows / LTX 首尾帧与中间帧控制**
+
+The `examples/` folder also includes LTX workflow examples for first/last frame and middle-frame control. These are separate workflow helpers and are not required for Smart Tile.
+
+`examples/` 目录里还包含 LTX 首尾帧、中间帧控制相关工作流示例。这些属于独立工作流辅助功能，不是 Smart Tile 的必需部分。
+
+### **Coordinate and Conditioning Utilities / 坐标与条件辅助节点**
+
+#### **Coordinate Splitter Node**
+This node converts position information into coordinates and connects them to the corresponding positions.
+
+**Node View**:
+
+![Coordinate Splitter Node](https://github.com/user-attachments/assets/25b73335-db42-4110-8138-6af07e45a8d8)
+
+---
+
+#### **Cond to Batch Node**
+This node converts condition lists into batches. It is reserved for future functionality expansion and connects to the conditions.
+
+**Node View**:
+
+![Cond to Batch Node](https://github.com/user-attachments/assets/f92a9ddc-1a98-4687-8875-03802e916dd4)
+
+---
+
+#### **Condition Merge Node**
+This node merges all tiled conditions into one and prepares them for building the final image. It connects to the **Coordinate Splitter Node** and **Cond to Batch Node**.
+
+**Node View**:
+
+![Condition Merge Node](https://github.com/user-attachments/assets/3039c8a3-8284-4b71-a9de-4120723258c7)
+
+---
+
 
 ## **Star History**
 <a href="https://star-history.com/#TTPlanetPig/Comfyui_TTP_Toolset&Date">
