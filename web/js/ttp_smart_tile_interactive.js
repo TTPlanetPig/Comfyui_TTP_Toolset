@@ -7,6 +7,7 @@ const MAX_TILES = 64;
 const MAX_GRID_AXIS = 8;
 const dragThresholdPx = 3;
 const snapGuideThresholdPx = 10;
+const largeContextAreaRatio = 0.9;
 const STORAGE_PREFIX = "ttp_smart_tile_interactive_layout";
 const GRID_MASK_MODES = ["off", "crop_mask", "crop_mask_skip_empty"];
 const TILE_METADATA_KEYS = [
@@ -217,7 +218,73 @@ function maskCanvasHasForeground(canvas) {
     return false;
 }
 
+function tileAreaRatio(tile) {
+    const width = Math.max(0, Number(tile?.x1 ?? 0) - Number(tile?.x0 ?? 0));
+    const height = Math.max(0, Number(tile?.y1 ?? 0) - Number(tile?.y0 ?? 0));
+    return Math.max(0, Math.min(1, width * height));
+}
+
+function tileSearchText(tile) {
+    return [
+        tile?.label,
+        tile?.name,
+        tile?.source,
+        tile?.semantic_category,
+        tile?.semantic_role,
+        tile?.recommended_composite_mode,
+    ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function isDetailTileText(text) {
+    return [
+        "face", "head", "eye", "eyes", "eyelash", "eyebrow", "glasses",
+        "mouth", "lip", "lips", "teeth", "nose", "ear", "ears",
+        "hand", "hands", "finger", "fingers", "text", "letter", "logo",
+        "jewelry", "ornament", "detail", "focus",
+    ].some((word) => text.includes(word));
+}
+
+function isLargeContextTile(tile) {
+    const text = tileSearchText(tile);
+    if (/(background|context|full image|full_image|large context)/.test(text)) {
+        return true;
+    }
+    return tileAreaRatio(tile) >= largeContextAreaRatio && !isDetailTileText(text);
+}
+
+function contextGridTileMetadata(sourceTile, childIndex) {
+    const baseName = String(sourceTile?.name || sourceTile?.label || "large_context").replace(/\s+/g, "_");
+    const rawLabel = String(sourceTile?.label || "large context");
+    const label = /context|background/i.test(rawLabel) ? rawLabel : `${rawLabel} large context`;
+    const metadata = {
+        name: `${baseName}_context_grid_${childIndex + 1}`,
+        source: sourceTile?.source || "auto_context",
+        label,
+        priority: Math.min(10, Number(sourceTile?.priority ?? 10) || 10),
+        importance: Math.min(0.35, Number(sourceTile?.importance ?? 0.35) || 0.35),
+        layer: 0,
+        object_id: 0,
+        occlusion_priority: 0,
+        semantic_category: "background",
+        semantic_role: "context",
+        recommended_layer: 0,
+        recommended_priority: 10,
+        recommended_occlusion_priority: 0,
+        recommended_composite_mode: "context",
+    };
+    if (sourceTile?.pad !== undefined) {
+        metadata.pad = sourceTile.pad;
+    }
+    if (sourceTile?.blend !== undefined) {
+        metadata.blend = sourceTile.blend;
+    }
+    return metadata;
+}
+
 function inheritedGridTileMetadata(sourceTile, childIndex) {
+    if (isLargeContextTile(sourceTile)) {
+        return contextGridTileMetadata(sourceTile, childIndex);
+    }
     const metadata = {};
     for (const key of TILE_METADATA_KEYS) {
         if (key !== "name" && key !== "object_mask" && sourceTile?.[key] !== undefined) {
@@ -297,7 +364,12 @@ function cropObjectMaskForTile(node, maskImage, maskBox, tile) {
 async function gridTilesWithInheritedMask(node, sourceTile, columns, rows, mode) {
     const children = gridTiles(node, columns, rows, sourceTile);
     if (mode === "off") {
-        return { tiles: children, cropped: 0, skipped: 0, emptied: 0 };
+        return {
+            tiles: children.map((child, index) => normalizeTile(node, { ...child, ...inheritedGridTileMetadata(sourceTile, index) })),
+            cropped: 0,
+            skipped: 0,
+            emptied: 0,
+        };
     }
 
     const maskData = sourceObjectMaskData(sourceTile);
@@ -355,7 +427,7 @@ async function refreshInheritedMasks(node, tiles, mode) {
     };
 
     for (const [index, tile] of tiles.entries()) {
-        const sourceMask = tile?.object_mask_source;
+        const sourceMask = sourceObjectMaskData(tile);
         if (!sourceMask?.data) {
             unchanged += 1;
             result.push(tile);
@@ -363,6 +435,11 @@ async function refreshInheritedMasks(node, tiles, mode) {
         }
         const { maskBox, maskImage } = await loadCachedMask(sourceMask);
         const nextTile = { ...tile };
+        if (isLargeContextTile(tile)) {
+            const contextMetadata = contextGridTileMetadata(tile, index);
+            contextMetadata.name = tile?.name || contextMetadata.name;
+            Object.assign(nextTile, contextMetadata);
+        }
         const refreshedMask = cropObjectMaskForTile(node, maskImage, maskBox, tile);
         if (refreshedMask) {
             nextTile.object_mask = refreshedMask;
@@ -923,10 +1000,10 @@ async function inferSmartTileLayout(node) {
     if (requestWidget) {
         requestWidget.value = Number(requestWidget.value ?? 0) + 1;
     }
-    node.ttpSmartTileStatus = `Queued ${mode} inference...`;
+    node.ttpSmartTileStatus = `Queued ${mode} inference for this node only...`;
     renderEditor(node);
     try {
-        await app.queuePrompt(0);
+        await app.queuePrompt(0, 1, [String(node.id)]);
     } catch (error) {
         if (requestWidget) {
             requestWidget.value = 0;

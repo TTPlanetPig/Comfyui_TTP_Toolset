@@ -31,7 +31,7 @@ assert(!/releasePointerCapture/.test(beginDrag), "existing tile drag should not 
 assert(!/writeLayout\(node, nextTiles, newIndex\);/.test(createTileBeforeMove), "empty-stage pointerdown should not create a tile before dragging");
 assert(/if \(!hasDragged && movedPx < dragThresholdPx\)/.test(createTile), "new tile creation should wait until movement crosses the threshold");
 assert(/async function inferSmartTileLayout/.test(source), "tile editor should expose an Infer action");
-assert(/app\.queuePrompt\(0\)/.test(source), "Infer action should queue the current ComfyUI graph");
+assert(/app\.queuePrompt\(0,\s*1,\s*\[String\(node\.id\)\]\)/.test(source), "Infer action should queue only the current Smart Tile node");
 assert(/ttp-smart-tile-layout/.test(source), "Infer action should listen for backend layout updates");
 assert(/auto_detect_request/.test(source), "Infer action should increment the node inference request widget");
 assert(!/\/ttp\/smart_tile\/analyze/.test(source), "Infer action should not use the old analysis route");
@@ -64,6 +64,11 @@ assert(/GRID_MASK_MODES/.test(source), "tile editor should expose grid mask inhe
 assert(/async function gridTilesWithInheritedMask/.test(source), "Grid in should be able to inherit and crop object masks");
 assert(/async function refreshInheritedMasks/.test(source), "tile editor should refresh inherited masks after manual edits");
 assert(/function cropObjectMaskForTile/.test(source), "Grid in should crop object masks per child tile");
+assert(/function isLargeContextTile/.test(source), "Grid in should detect huge context tiles");
+assert(/function contextGridTileMetadata/.test(source), "Grid in should keep huge context children on the lowest layer");
+assert(/tileAreaRatio\(tile\) >= largeContextAreaRatio/.test(source), "huge non-detail tiles should be treated as context tiles");
+assert(/const maskData = sourceObjectMaskData\(sourceTile\);/.test(source), "huge context Grid in should still preserve and crop the body mask");
+assert(!/sourceIsLargeContext \? null : sourceObjectMaskData/.test(source), "huge context Grid in must not drop the source body mask");
 assert(/crop_mask_skip_empty/.test(source), "Grid in should allow skipping empty mask child tiles");
 assert(/createButton\(`Grid in T\$\{selectedIndex \+ 1\}`, async \(\) =>/.test(source), "Grid in should run asynchronously for mask cropping");
 assert(/ensurePaintMaskCanvas/.test(source), "tile editor should create a paint mask canvas");

@@ -78,6 +78,27 @@ def assert_equal(actual, expected, message):
         raise AssertionError(f"{message}: expected {expected}, got {actual}")
 
 
+def assert_image_close(actual, expected, message, tolerance=1e-6):
+    actual_array = getattr(actual, "array", actual)
+    expected_array = getattr(expected, "array", expected)
+    if not np.allclose(actual_array, expected_array, atol=tolerance, rtol=0.0):
+        max_delta = float(np.max(np.abs(actual_array - expected_array)))
+        raise AssertionError(f"{message}: max delta {max_delta} > {tolerance}")
+
+
+def call_assemble_like_comfy(node, widget_values, **linked_inputs):
+    kwargs = {}
+    required = node.INPUT_TYPES()["required"]
+    for index, (name, spec) in enumerate(required.items()):
+        if index < len(widget_values):
+            kwargs[name] = widget_values[index]
+            continue
+        if isinstance(spec, tuple) and len(spec) > 1 and isinstance(spec[1], dict) and "default" in spec[1]:
+            kwargs[name] = spec[1]["default"]
+    kwargs.update(linked_inputs)
+    return node.assemble_tiles(**kwargs)
+
+
 install_comfy_stubs()
 
 import TTP_toolsets as ttp  # noqa: E402
@@ -141,6 +162,34 @@ assert_equal("qwen_vl_model" in optional_inputs, True, "interactive crop should 
 assert_equal(hidden_inputs["unique_id"], "UNIQUE_ID", "interactive crop should receive its ComfyUI node id")
 
 assemble_inputs = ttp.TTP_Smart_Tile_Assemble_Experimental.INPUT_TYPES()
+expected_assemble_required_order = [
+    "blend_multiplier",
+    "output_scale",
+    "use_priority",
+    "tile_alignment",
+    "edge_crop_px",
+    "color_correction",
+    "color_strength",
+    "mask_blend_mode",
+    "pixel_alignment",
+    "pixel_alignment_radius",
+    "pixel_alignment_device",
+    "large_tile_policy",
+    "large_tile_area_threshold",
+    "min_tile_scale_ratio",
+    "context_tile_weight",
+    "assemble_device",
+    "assemble_mode",
+    "base_canvas_mode",
+    "weight_preview_mode",
+    "small_tile_on_top",
+    "auto_composite_policy",
+]
+assert_equal(
+    list(assemble_inputs["required"].keys()),
+    expected_assemble_required_order,
+    "assemble required widgets should keep the same order ComfyUI stores in workflow widget values",
+)
 assert_equal("sampled_tiles" in assemble_inputs["optional"], True, "assemble should keep batch tiles as an optional compatibility input")
 assert_equal("tile_meta" in assemble_inputs["optional"], True, "assemble should keep batch metadata as an optional compatibility input")
 assert_equal("tile_set" in assemble_inputs["optional"], True, "assemble should accept true variable-size tile sets")
@@ -155,6 +204,8 @@ assert_equal(assemble_inputs["required"]["assemble_device"][0], ["auto", "cpu", 
 assert_equal(assemble_inputs["required"]["assemble_mode"][0], ["final_only", "always"], "assemble should expose final-only mode first")
 assert_equal(assemble_inputs["required"]["assemble_mode"][1]["default"], "final_only", "assemble should default to final-only loop compositing")
 assert_equal(assemble_inputs["required"]["base_canvas_mode"][0], ["auto", "black", "base_image", "source_image"], "assemble should expose base canvas source selection")
+assert_equal(assemble_inputs["required"]["weight_preview_mode"][0], ["raw_weight", "coverage"], "assemble should expose raw weight and coverage preview modes")
+assert_equal(assemble_inputs["required"]["weight_preview_mode"][1]["default"], "raw_weight", "assemble should keep raw overlap weight preview as the default")
 assert_equal("small_tile_on_top" in assemble_inputs["required"], True, "assemble should expose small tile top stacking")
 assert_equal(assemble_inputs["required"]["auto_composite_policy"][0], ["safe_auto", "strict_layer", "soft_detail", "replace_object"], "assemble should expose automatic compositing policy")
 assert_equal(assemble_inputs["required"]["auto_composite_policy"][1]["default"], "safe_auto", "assemble should default to safe auto compositing")
@@ -408,6 +459,120 @@ selected_tile, selected_info = preview_node.preview_tile_set(
 )
 assert_equal(list(selected_tile.shape[1:3]), [328, 432], "selected tile preview should preserve the selected tile size")
 assert_equal("4:" in selected_info, True, "selected tile preview should include tile index info")
+
+grid_assemble_node = ttp.TTP_Smart_Tile_Assemble_Experimental()
+_grid_output_raw, grid_raw_weight_preview = grid_assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    mask_blend_mode="mask_feather",
+    tile_set=tile_set,
+)
+assert_equal(float(grid_raw_weight_preview.array.max()), 1.0, "raw 3x3 weight preview should normalize the highest overlap to white")
+assert_equal(float(grid_raw_weight_preview.array.min()) < 1.0, True, "raw 3x3 weight preview should show lower-weight single tile areas darker than overlap zones")
+_grid_output, grid_coverage_preview = grid_assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    weight_preview_mode="coverage",
+    mask_blend_mode="mask_feather",
+    tile_set=tile_set,
+)
+assert_equal(float(grid_coverage_preview.array.min()), 1.0, "black canvas 3x3 coverage preview should be uniformly covered")
+assert_equal(float(grid_coverage_preview.array.max()), 1.0, "black canvas 3x3 coverage preview should not show raw overlap weight grid lines")
+
+comfy_assemble_widget_values = [
+    1.0,
+    0.0,
+    True,
+    "resize",
+    0,
+    "off",
+    0.35,
+    "mask_feather",
+    "off",
+    0,
+    "cpu",
+    "use_if_higher_resolution",
+    0.55,
+    0.95,
+    0.25,
+    "cpu",
+    "final_only",
+    "black",
+    "raw_weight",
+    False,
+    "safe_auto",
+]
+direct_comfy_output, direct_comfy_weights = grid_assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    tile_alignment="resize",
+    edge_crop_px=0,
+    color_correction="off",
+    color_strength=0.35,
+    mask_blend_mode="mask_feather",
+    pixel_alignment="off",
+    pixel_alignment_radius=0,
+    pixel_alignment_device="cpu",
+    large_tile_policy="use_if_higher_resolution",
+    large_tile_area_threshold=0.55,
+    min_tile_scale_ratio=0.95,
+    context_tile_weight=0.25,
+    assemble_device="cpu",
+    assemble_mode="final_only",
+    base_canvas_mode="black",
+    weight_preview_mode="raw_weight",
+    small_tile_on_top=False,
+    auto_composite_policy="safe_auto",
+    tile_set=tile_set,
+    done=True,
+)
+replayed_comfy_output, replayed_comfy_weights = call_assemble_like_comfy(
+    grid_assemble_node,
+    comfy_assemble_widget_values,
+    output_scale=1.0,
+    tile_set=tile_set,
+    done=True,
+)
+assert_image_close(replayed_comfy_output, direct_comfy_output, "ComfyUI widget-order assemble replay should match direct assemble output")
+assert_image_close(replayed_comfy_weights, direct_comfy_weights, "ComfyUI widget-order assemble replay should match direct assemble weight preview")
+
+ranked_grid_meta = dict(tile_set["tile_meta"])
+ranked_grid_tiles = []
+for tile_index, tile in enumerate(tile_set["tile_meta"]["tiles"]):
+    ranked_tile = dict(tile)
+    ranked_tile["layer"] = tile_index
+    ranked_tile["occlusion_priority"] = tile_index
+    ranked_grid_tiles.append(ranked_tile)
+ranked_grid_meta["tiles"] = ranked_grid_tiles
+ranked_grid_tile_set = dict(tile_set)
+ranked_grid_tile_set["tile_meta"] = ranked_grid_meta
+_ranked_grid_output, ranked_grid_weight_preview = grid_assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    mask_blend_mode="mask_feather",
+    auto_composite_policy="safe_auto",
+    tile_set=ranked_grid_tile_set,
+)
+ranked_width, ranked_height = ranked_grid_meta["original_size"]
+internal_x = sorted({tile["core_box"][0] for tile in ranked_grid_tiles if tile["core_box"][0] > 0})
+internal_y = sorted({tile["core_box"][1] for tile in ranked_grid_tiles if tile["core_box"][1] > 0})
+column_centers = sorted({min(ranked_width - 1, tile["core_box"][0] + tile["core_box"][2] // 2) for tile in ranked_grid_tiles[:3]})
+row_centers = sorted({min(ranked_height - 1, ranked_grid_tiles[row * 3]["core_box"][1] + ranked_grid_tiles[row * 3]["core_box"][3] // 2) for row in range(3)})
+ranked_seam_values = []
+for seam_x in internal_x:
+    for center_y in row_centers:
+        ranked_seam_values.append(float(ranked_grid_weight_preview.array[0, center_y, seam_x, 0]))
+for seam_y in internal_y:
+    for center_x in column_centers:
+        ranked_seam_values.append(float(ranked_grid_weight_preview.array[0, seam_y, center_x, 0]))
+assert_equal(min(ranked_seam_values) > 0.45, True, "safe auto ranked 3x3 grid seams should keep both tile contributions instead of showing dark split lines")
 
 prompt_builder = ttp.TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental()
 prompt_tile_set, prompt_set_json, prompt_summary = prompt_builder.build_prompt_set(
@@ -777,7 +942,7 @@ mixed_scale_tile_set = {
     ],
 }
 deferred_scale, deferred_w, deferred_h, deferred_x, deferred_y, deferred_info = size_node.estimate_output_size(mixed_scale_tile_set, done=False)
-assert_equal([deferred_scale, deferred_w, deferred_h, deferred_x, deferred_y], [0.0, 0, 0, 0.0, 0.0], "output size estimate should skip work before loop completion")
+assert_equal([deferred_scale, deferred_w, deferred_h, deferred_x, deferred_y], [1.0, 100, 50, 1.0, 1.0], "output size estimate should return safe pending dimensions before loop completion")
 assert_equal("deferred" in deferred_info, True, "output size estimate should report deferred status")
 size_scale, size_w, size_h, size_scale_x, size_scale_y, size_info = size_node.estimate_output_size(mixed_scale_tile_set)
 assert_equal(round(size_scale, 4), 3.0, "output size estimate should match assemble median scale inference")
@@ -979,6 +1144,30 @@ assert_equal("object_mask" in masked_auto_meta[0], True, "auto layout should pre
 mask_array = ttp._ttp_tile_object_mask_array(masked_auto_meta[0], masked_auto_meta[0]["sample_box"][2], masked_auto_meta[0]["sample_box"][3], "mask_feather", 32)
 assert_equal(mask_array.shape[2], 1, "decoded object mask should be a single-channel weight map")
 assert_equal(float(mask_array.max()) > 0.5, True, "decoded object mask should keep foreground weight")
+
+large_body_mask = Image.new("L", (900, 600), 255)
+large_body_layout = ttp._ttp_boxes_to_auto_layout(
+    [{"x": 0, "y": 0, "width": 900, "height": 600, "label": "person body", "score": 0.93}],
+    900,
+    600,
+    default_pad=64,
+    default_blend=32,
+    object_padding=0,
+    max_tiles=4,
+    include_background=False,
+    allow_object_overlap=True,
+    masks=[large_body_mask],
+)
+large_body_meta = ttp._ttp_parse_smart_tile_layout(large_body_layout, 900, 600)
+large_body_tile = large_body_meta[0]
+assert_equal("large context" in large_body_tile["label"], True, "huge non-detail auto body tiles should be marked as large context")
+assert_equal(large_body_tile["layer"], 0, "huge non-detail auto body tiles should stay on the lowest layer")
+assert_equal(large_body_tile["occlusion_priority"], 0, "huge non-detail auto body tiles should not outrank face/detail masks")
+assert_equal(float(large_body_tile["priority"]) <= 10.0, True, "huge non-detail auto body tiles should keep low composite priority")
+assert_equal(float(large_body_tile["importance"]) <= 0.35, True, "huge non-detail auto body tiles should remain a low-weight context layer")
+assert_equal("object_mask" in large_body_tile, True, "huge body context tiles should still preserve their body mask")
+assert_equal(large_body_tile["recommended_composite_mode"], "context", "huge body context tiles should advertise context compositing")
+
 semantic_mask_layout = json.dumps({
     "tiles": [{
         "name": "person_grid_1",
@@ -1138,7 +1327,7 @@ stack_meta = {
         {
             "name": "small_face",
             "label": "local detail",
-            "core_box": [2, 2, 6, 6],
+            "core_box": [2, 2, 4, 4],
             "sample_box": [2, 2, 4, 4],
             "tile_canvas_size": [4, 4],
             "tile_canvas_box": [0, 0, 4, 4],
@@ -1180,6 +1369,54 @@ small_above, _small_above_weights = assemble_node.assemble_tiles(
 )
 small_above_pixel = small_above.array[0, 4, 4]
 assert_equal(float(small_above_pixel[2]) > float(small_above_pixel[0]), True, "small_tile_on_top should stack smaller tiles above larger context tiles")
+
+legacy_bad_bool, _legacy_bad_bool_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    small_tile_on_top="safe_auto",
+    auto_composite_policy="strict_layer",
+    tile_set=stack_tile_set,
+)
+legacy_bad_bool_pixel = legacy_bad_bool.array[0, 4, 4]
+assert_equal(float(legacy_bad_bool_pixel[0]) > float(legacy_bad_bool_pixel[2]), True, "legacy string values should not be treated as small_tile_on_top=true")
+
+fingerprint_mask_a = Image.new("L", (8, 8), 0)
+ImageDraw.Draw(fingerprint_mask_a).rectangle((0, 0, 3, 7), fill=255)
+fingerprint_mask_b = Image.new("L", (8, 8), 0)
+ImageDraw.Draw(fingerprint_mask_b).rectangle((4, 0, 7, 7), fill=255)
+fingerprint_source_a = ttp._ttp_encode_object_mask_data([fingerprint_mask_a], [0], [0, 0, 8, 8])
+fingerprint_source_b = ttp._ttp_encode_object_mask_data([fingerprint_mask_b], [0], [0, 0, 8, 8])
+fingerprint_tile = {
+    "name": "context_grid_1",
+    "label": "large context",
+    "core_box": [0, 0, 8, 8],
+    "sample_box": [0, 0, 8, 8],
+    "object_mask": fingerprint_source_a,
+    "object_mask_source": fingerprint_source_a,
+    "layer": 0,
+    "occlusion_priority": 0,
+}
+fingerprint_tile_set_a = {
+    "type": "ttp_smart_tile_set",
+    "original_size": [8, 8],
+    "tile_meta": {"type": "ttp_smart_tile", "original_size": [8, 8], "tiles": [fingerprint_tile]},
+    "tile_images": [None],
+}
+fingerprint_tile_b = dict(fingerprint_tile)
+fingerprint_tile_b["object_mask_source"] = fingerprint_source_b
+fingerprint_tile_set_b = {
+    "type": "ttp_smart_tile_set",
+    "original_size": [8, 8],
+    "tile_meta": {"type": "ttp_smart_tile", "original_size": [8, 8], "tiles": [fingerprint_tile_b]},
+    "tile_images": [None],
+}
+assert_equal(
+    ttp._ttp_tile_set_fingerprint(fingerprint_tile_set_a) != ttp._ttp_tile_set_fingerprint(fingerprint_tile_set_b),
+    True,
+    "loop fingerprint should change when object_mask_source changes",
+)
 
 feather_stack_meta = {
     "type": "ttp_smart_tile",
@@ -1307,6 +1544,187 @@ safe_eye_edge = safe_eye.array[0, 4, 8]
 safe_eye_center = safe_eye.array[0, 8, 8]
 assert_equal(float(safe_eye_edge[0]) > float(strict_eye_edge[0]), True, "safe auto detail overlay should preserve more face color at eye mask edges")
 assert_equal(float(safe_eye_center[2]) > float(safe_eye_center[0]), True, "safe auto detail overlay should keep eye details stronger at the mask center")
+
+subdivided_mask_full = Image.new("L", (64, 64), 0)
+ImageDraw.Draw(subdivided_mask_full).rectangle((24, 24, 39, 39), fill=255)
+subdivided_mask_data = ttp._ttp_encode_object_mask_data([subdivided_mask_full], [0], [24, 24, 40, 40])
+subdivided_detail_tile = {
+    "name": "object_5_second_grid_child",
+    "label": "object_5",
+    "core_box": [24, 24, 16, 16],
+    "sample_box": [8, 8, 48, 48],
+    "tile_canvas_size": [48, 48],
+    "tile_canvas_box": [0, 0, 48, 48],
+    "overlap_edges_px_source": {"left": 16, "right": 16, "top": 16, "bottom": 16},
+    "blend": 0,
+    "importance": 1.0,
+    "priority": 0.0,
+    "layer": 4,
+    "occlusion_priority": 2000,
+    "object_mask": subdivided_mask_data,
+    "object_mask_source": subdivided_mask_data,
+}
+subdivided_meta = {
+    "type": "ttp_smart_tile",
+    "original_size": [64, 64],
+    "tiles": [
+        {
+            "name": "face_base",
+            "label": "face",
+            "core_box": [0, 0, 64, 64],
+            "sample_box": [0, 0, 64, 64],
+            "tile_canvas_size": [64, 64],
+            "tile_canvas_box": [0, 0, 64, 64],
+            "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+            "blend": 0,
+            "importance": 1.0,
+            "priority": 0.0,
+            "layer": 1,
+            "occlusion_priority": 100,
+        },
+        subdivided_detail_tile,
+    ],
+}
+subdivided_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "tile_meta": subdivided_meta,
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (64, 64), (220, 20, 20)))[0],
+        ttp.pil2tensor(Image.new("RGB", (48, 48), (20, 20, 220)))[0],
+    ],
+}
+assert_equal(ttp._ttp_tile_area_ratio(subdivided_detail_tile, 64 * 64) < 0.07, True, "subdivided detail ranking should use core area instead of padded sample area")
+subdivided_mask_array = ttp._ttp_tile_object_mask_array(subdivided_detail_tile, 48, 48, "mask_feather", 0)
+assert_equal(0.0 < float(subdivided_mask_array[16, 15, 0]) < 1.0, True, "mask_feather should soften subdivided object masks even when blend is zero")
+strict_subdivided, _strict_subdivided_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    mask_blend_mode="mask_feather",
+    auto_composite_policy="strict_layer",
+    tile_set=subdivided_tile_set,
+)
+safe_subdivided, _safe_subdivided_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    mask_blend_mode="mask_feather",
+    auto_composite_policy="safe_auto",
+    tile_set=subdivided_tile_set,
+)
+strict_subdivided_edge = strict_subdivided.array[0, 32, 24]
+safe_subdivided_edge = safe_subdivided.array[0, 32, 24]
+safe_subdivided_center = safe_subdivided.array[0, 32, 32]
+assert_equal(float(safe_subdivided_edge[0]) > float(strict_subdivided_edge[0]), True, "safe auto should not let a repeatedly subdivided masked tile cut a hard hole in the lower face tile")
+assert_equal(float(safe_subdivided_center[2]) > float(safe_subdivided_center[0]), True, "safe auto should still keep the subdivided detail strong at the mask center")
+
+split_body_mask = Image.new("L", (64, 32), 255)
+split_body_source_mask = ttp._ttp_encode_object_mask_data([split_body_mask], [0], [0, 0, 64, 32])
+split_body_left_mask = ttp._ttp_encode_object_mask_data([split_body_mask], [0], [0, 0, 32, 32])
+split_body_right_mask = ttp._ttp_encode_object_mask_data([split_body_mask], [0], [32, 0, 64, 32])
+split_body_left_tile = {
+    "name": "body_context_grid_1",
+    "label": "person body large context",
+    "source": "auto_context",
+    "core_box": [0, 0, 32, 32],
+    "sample_box": [0, 0, 40, 32],
+    "tile_canvas_size": [40, 32],
+    "tile_canvas_box": [0, 0, 40, 32],
+    "overlap_edges_px_source": {"left": 0, "right": 8, "top": 0, "bottom": 0},
+    "blend": 8,
+    "importance": 0.35,
+    "priority": 10.0,
+    "layer": 0,
+    "occlusion_priority": 0,
+    "recommended_composite_mode": "context",
+    "object_mask": split_body_left_mask,
+    "object_mask_source": split_body_source_mask,
+}
+split_body_right_tile = {
+    "name": "body_context_grid_2",
+    "label": "person body large context",
+    "source": "auto_context",
+    "core_box": [32, 0, 32, 32],
+    "sample_box": [24, 0, 40, 32],
+    "tile_canvas_size": [40, 32],
+    "tile_canvas_box": [0, 0, 40, 32],
+    "overlap_edges_px_source": {"left": 8, "right": 0, "top": 0, "bottom": 0},
+    "blend": 8,
+    "importance": 0.35,
+    "priority": 10.0,
+    "layer": 0,
+    "occlusion_priority": 0,
+    "recommended_composite_mode": "context",
+    "object_mask": split_body_right_mask,
+    "object_mask_source": split_body_source_mask,
+}
+split_source_mask_array = ttp._ttp_tile_object_mask_array(split_body_left_tile, 40, 32, "mask_feather", 8)
+assert_equal(float(split_source_mask_array[16, 36, 0]) > 0.5, True, "subdivided context masks should use source masks so overlap regions stay available")
+split_body_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "tile_meta": {
+        "type": "ttp_smart_tile",
+        "original_size": [64, 32],
+        "tiles": [split_body_left_tile, split_body_right_tile],
+    },
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (40, 32), (90, 90, 90)))[0],
+        ttp.pil2tensor(Image.new("RGB", (40, 32), (90, 90, 90)))[0],
+    ],
+}
+_split_body_output, split_body_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    mask_blend_mode="mask_feather",
+    auto_composite_policy="safe_auto",
+    tile_set=split_body_tile_set,
+)
+split_body_single_weight = float(split_body_weights.array[0, 16, 16, 0])
+split_body_seam_weight = float(split_body_weights.array[0, 16, 32, 0])
+assert_equal(split_body_seam_weight > split_body_single_weight + 0.2, True, "subdivided context mask seams should show real overlap blending")
+
+fractional_scale_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "tile_meta": {
+        "type": "ttp_smart_tile",
+        "original_size": [3, 1],
+        "tiles": [
+            {
+                "name": f"column_{index}",
+                "label": "grid",
+                "core_box": [index, 0, 1, 1],
+                "sample_box": [index, 0, 1, 1],
+                "tile_canvas_size": [1, 1],
+                "tile_canvas_box": [0, 0, 1, 1],
+                "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+                "blend": 0,
+                "importance": 1.0,
+                "priority": 0.0,
+            }
+            for index in range(3)
+        ],
+    },
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (1, 1), (index * 80, index * 80, index * 80)))[0]
+        for index in range(3)
+    ],
+}
+_fractional_output, fractional_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.4,
+    use_priority=False,
+    base_canvas_mode="black",
+    weight_preview_mode="coverage",
+    tile_set=fractional_scale_tile_set,
+)
+assert_equal(list(fractional_weights.shape), [1, 1, 4, 3], "fractional output scale should round the full canvas size")
+assert_equal(float(fractional_weights.array.min()), 1.0, "fractional output scale should not leave rounded tile boundary gaps")
+fractional_edges = ttp._ttp_scaled_overlap_edges([1, 0, 3, 1], {"left": 1, "right": 0, "top": 0, "bottom": 0}, 1.4, 5, 1)
+assert_equal(fractional_edges["left"], 2, "fractional overlap edges should use source endpoints instead of independent length rounding")
 
 deferred_output, deferred_weights = assemble_node.assemble_tiles(
     blend_multiplier=1.0,

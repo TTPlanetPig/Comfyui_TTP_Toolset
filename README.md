@@ -100,6 +100,47 @@ Use `TTP Smart Tile Loop Source` and `TTP Smart Tile Loop Collect` instead of ma
 
 By default, `TTP Smart Tile Assemble` uses `assemble_mode=final_only`. Connect `TTP Smart Tile Loop Collect.done` to `TTP Smart Tile Assemble.done` so unfinished loop runs return a lightweight preview while `done=false`, then perform the full assemble once after the last tile. Switch `assemble_mode` to `always` only when you really want a full recomposite after every tile. If pixel alignment is enabled, unfinished loop runs are automatically treated as final-only to avoid repeated expensive alignment passes.
 
+#### **Complete Example Workflow / 完整范例工作流**
+
+Example workflow / 示例工作流: [`examples/smart_tile_qwen_sam_loop_example_v2.json`](examples/smart_tile_qwen_sam_loop_example_v2.json)
+
+这份工作流展示了当前推荐的 Smart Tile 完整链路：先用 `TTP Smart Tile Interactive Crop` 和 `sam3.1` 做 Auto Tile 分块，再用 `TTP Smart Tile QwenVL Prompt Set Builder` 生成每块提示词。随后 `Semantic Rank` 写入语义优先级，`Loop Source` 把 tile 一张一张送入 img2img，`Image Upscale Prep` 负责采样前放大，`Loop Collect` 收集结果，最后由 `Output Size Estimate` 估算画布尺寸，`Assemble` 在 `final_only` 模式下一次拼合，`Save Final Image` 只保存最终图。
+
+This workflow is the recommended full Smart Tile loop. It uses `TTP Smart Tile Interactive Crop` with `sam3.1` Auto Tile, prepares per-tile prompts with `TTP Smart Tile QwenVL Prompt Set Builder`, ranks tiles with `Semantic Rank`, sends one tile at a time through img2img with `Loop Source`, upscales each tile before sampling with `Image Upscale Prep`, collects results with `Loop Collect`, estimates the final canvas with `Output Size Estimate`, assembles once in `final_only` mode, and saves only the completed result.
+
+**Workflow overview / 工作流全景**
+
+<img src="docs/images/smart_tile_workflow_chrome_overview.png" alt="Smart Tile complete workflow in ComfyUI" width="960">
+
+**Key views / 关键视图**
+
+<table>
+  <tr>
+    <td width="50%"><strong>Interactive editor / 交互分块编辑器</strong><br><img src="docs/images/smart_tile_chrome_interactive_editor.png" alt="Smart Tile interactive editor" width="420"></td>
+    <td width="50%"><strong>Tile set preview / 分块预览</strong><br><img src="docs/images/smart_tile_chrome_tile_set_preview.png" alt="Smart Tile tile set preview" width="420"></td>
+  </tr>
+  <tr>
+    <td width="50%"><strong>Weight preview / 权重预览</strong><br><img src="docs/images/smart_tile_chrome_weight_preview.png" alt="Smart Tile weight preview" width="420"></td>
+    <td width="50%"><strong>Final preview / 最终预览</strong><br><img src="docs/images/smart_tile_chrome_final_preview.png" alt="Smart Tile final preview" width="420"></td>
+  </tr>
+</table>
+
+**Key settings / 关键设置**
+
+| Node / 节点 | Example setting / 示例设置 | Notes / 说明 |
+|---|---|---|
+| `Interactive Crop` | `auto_detect_mode=sam3.1`, `default_pad=32`, `default_blend=32`, `auto_object_padding=64`, `auto_max_tiles=16` | Use `Auto Tile` to create an object-aware layout, then set `auto_detect_mode=none` if you want to freeze manual edits. / 用 `Auto Tile` 生成语义分块；如果之后要固定手动编辑结果，可以把 `auto_detect_mode` 改回 `none`。 |
+| `QwenVL3 Local Loader` | `qwen3vl_4b_fp8_scaled.safetensors` | Replace this with the QwenVL model installed in `ComfyUI/models/text_encoders`. / 按你本机 `models/text_encoders` 里的 QwenVL 模型替换。 |
+| `QwenVL Prompt Set Builder` | `reference_image_mode=first_message`, `prompt_preset=tile_img2img_prompt`, `output_language=chinese` | Builds prompts before the tile loop, then `Loop Source.prompt` feeds the text encoder. / 在循环前一次性生成每块提示词，然后由 `Loop Source.prompt` 送入文本编码。 |
+| `Image Upscale Prep` | `scale=2.5`, `round_to=8`, `max_megapixels=1.5`, `use_upscale_model=true` | Enlarges each tile before img2img while keeping each tile under the megapixel cap. / 采样前放大每块 tile，同时用百万像素上限控制显存。 |
+| `Loop Source` / `Loop Collect` | `Process All Tiles` workflow | The tile count can be 4, 8, 16, or any layout count; no manual sampler duplication is needed. / 分块数量可以变化，不需要手动复制多套 sampler。 |
+| `Output Size Estimate` | `focus_weighted` | Estimates the final canvas from processed tile sizes, giving more influence to focus/detail tiles. / 根据处理后的 tile 尺寸估算最终画布，并更重视细节块。 |
+| `Assemble` | `assemble_mode=final_only`, `mask_blend_mode=mask_feather`, `color_correction=histogram`, `small_tile_on_top=true`, `auto_composite_policy=safe_auto` | Assembles only after the loop is done, uses mask-aware feathering, and keeps small detail tiles above larger context tiles. / 循环结束后只拼合一次，使用蒙版羽化，并让小细节块优先于大背景块。 |
+
+Before running the example, replace model filenames such as the diffusion model, CLIP/text encoder, VAE, LoRA, and upscale model with files installed on your machine. The workflow is meant as a wiring reference; model choices can be changed freely.
+
+运行示例前，请把 diffusion model、CLIP/text encoder、VAE、LoRA、upscale model 等模型名替换成你本机已经安装的文件。这份工作流主要作为连线参考，具体模型可以自由替换。
+
 #### **Auto Tile: SAM3.1 or QwenVL3**
 
 ![Smart Tile automatic detection modes](docs/images/smart_tile_auto_modes.svg)

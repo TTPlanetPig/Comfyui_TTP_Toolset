@@ -731,7 +731,9 @@ def _ttp_decode_object_mask_data(mask_data):
 def _ttp_tile_object_mask_array(tile, out_width, out_height, mask_blend_mode="mask_feather", feather=0):
     if str(mask_blend_mode) == "off":
         return None
-    mask_data = tile.get("object_mask")
+    mask_data = tile.get("object_mask_source")
+    if not isinstance(mask_data, dict) or mask_data.get("format") != "png_base64":
+        mask_data = tile.get("object_mask")
     mask_pil = _ttp_decode_object_mask_data(mask_data)
     if mask_pil is None:
         return None
@@ -756,7 +758,9 @@ def _ttp_tile_object_mask_array(tile, out_width, out_height, mask_blend_mode="ma
     )
     source_mask = source_mask.resize((out_width, out_height), Image.Resampling.BILINEAR)
     if str(mask_blend_mode) in ("auto", "mask_feather"):
-        radius = max(0.0, min(64.0, float(feather) * 0.35))
+        min_radius = min(12.0, max(0.75, min(int(out_width), int(out_height)) * 0.006))
+        radius = max(min_radius, float(feather) * 0.35)
+        radius = max(0.0, min(64.0, radius))
         if radius > 0:
             source_mask = source_mask.filter(ImageFilter.GaussianBlur(radius=radius))
     array = np.array(source_mask).astype(np.float32) / 255.0
@@ -849,10 +853,10 @@ def _ttp_is_detail_tile_text(text):
 
 
 def _ttp_tile_area_ratio(tile, original_area):
-    sample_box = tile.get("sample_box", [0, 0, 0, 0])
-    if len(sample_box) < 4:
+    box = tile.get("core_box", tile.get("sample_box", [0, 0, 0, 0]))
+    if len(box) < 4:
         return 0.0
-    area = max(0.0, float(sample_box[2])) * max(0.0, float(sample_box[3]))
+    area = max(0.0, float(box[2])) * max(0.0, float(box[3]))
     return _ttp_clamp(area / max(1.0, float(original_area)), 0.0, 1.0)
 
 
@@ -1002,7 +1006,7 @@ def _ttp_should_soft_overlay_tile(tile, policy, is_large_tile, tile_area_ratio, 
     recommended_mode = str(tile.get("recommended_composite_mode", "") or "").lower()
     if recommended_mode == "soft_overlay":
         return True
-    text = _ttp_tile_search_text(tile)
+    text = _ttp_tile_semantic_text(tile)
     if _ttp_is_context_tile_text(text):
         return False
     if policy == "soft_detail":
@@ -1013,7 +1017,11 @@ def _ttp_should_soft_overlay_tile(tile, policy, is_large_tile, tile_area_ratio, 
         return True
     small_threshold = max(0.02, min(0.18, float(large_tile_area_threshold) * 0.35))
     has_rank = float(tile.get("occlusion_priority", 0.0)) > 0.0 or float(tile.get("layer", 0.0)) > 0.0
-    return has_rank and float(tile_area_ratio) <= small_threshold
+    if tile.get("object_mask") and has_rank:
+        mask_overlay_threshold = max(small_threshold, min(0.32, float(large_tile_area_threshold) * 0.6))
+        if float(tile_area_ratio) <= mask_overlay_threshold:
+            return True
+    return False
 
 
 def _ttp_soften_detail_mask_array(mask, grow_px=1, blur_px=1.0):
@@ -1532,9 +1540,15 @@ def _ttp_auto_tile_rank(label, object_area, image_area, object_index):
     )
     area_ratio = max(0.0, min(1.0, float(object_area) / max(1.0, float(image_area))))
     small_bonus = min(450, int(round((1.0 - area_ratio) * 450.0)))
+    if _ttp_is_large_context_auto_tile(label_text, area_ratio):
+        return 0, 0
     if any(keyword in label_text for keyword in detail_keywords):
         return 4, 2000 + small_bonus + int(object_index)
     return 2, 300 + small_bonus + int(object_index)
+
+
+def _ttp_is_large_context_auto_tile(label, area_ratio):
+    return float(area_ratio) >= 0.9 and not _ttp_is_detail_tile_text(str(label or "").lower())
 
 
 def _ttp_boxes_to_auto_layout(
@@ -1590,10 +1604,14 @@ def _ttp_boxes_to_auto_layout(
         x0, y0, x1, y1 = box
         object_area = (x1 - x0) * (y1 - y0)
         image_area = max(1, image_width * image_height)
-        layer, occlusion_priority = _ttp_auto_tile_rank(item.get("label", f"object_{object_index}"), object_area, image_area, object_index)
-        priority = 70 + min(80, int(100 * object_area / image_area)) + int(float(item.get("score", 1.0)) * 20)
+        area_ratio = max(0.0, min(1.0, float(object_area) / float(image_area)))
+        raw_label = str(item.get("label", f"object_{object_index}") or f"object_{object_index}")
+        is_large_context = _ttp_is_large_context_auto_tile(raw_label, area_ratio)
+        layer, occlusion_priority = _ttp_auto_tile_rank(raw_label, object_area, image_area, object_index)
+        priority = 5 if is_large_context else 70 + min(80, int(100 * area_ratio)) + int(float(item.get("score", 1.0)) * 20)
+        label = f"{raw_label} large context" if is_large_context and "context" not in raw_label.lower() else raw_label
         tile = {
-            "name": f"auto_{item.get('label', 'object')}_{object_index}",
+            "name": f"{'auto_large_context' if is_large_context else 'auto_' + raw_label}_{object_index}",
             "x0": x0 / image_width,
             "y0": y0 / image_height,
             "x1": x1 / image_width,
@@ -1601,14 +1619,23 @@ def _ttp_boxes_to_auto_layout(
             "pad": int(default_pad) if allow_object_overlap else max(0, int(default_pad) // 2),
             "blend": int(default_blend),
             "priority": priority,
-            "importance": 1.0,
-            "source": "auto",
-            "label": item.get("label", f"object_{object_index}"),
+            "importance": 0.35 if is_large_context else 1.0,
+            "source": "auto_context" if is_large_context else "auto",
+            "label": label,
             "score": float(item.get("score", 1.0)),
             "layer": layer,
-            "object_id": object_index,
+            "object_id": 0 if is_large_context else object_index,
             "occlusion_priority": occlusion_priority,
         }
+        if is_large_context:
+            tile.update({
+                "semantic_category": "background",
+                "semantic_role": "context",
+                "recommended_layer": 0.0,
+                "recommended_priority": 10.0,
+                "recommended_occlusion_priority": 0.0,
+                "recommended_composite_mode": "context",
+            })
         object_mask = _ttp_encode_object_mask_data(mask_images, item.get("mask_indices", []), box)
         if object_mask is not None:
             tile["object_mask"] = object_mask
@@ -1718,6 +1745,37 @@ def _ttp_round_down_to(value, multiple):
         return value
     rounded = int(math.floor(value / multiple) * multiple)
     return max(multiple, rounded)
+
+
+def _ttp_scaled_source_box(box, scale):
+    x, y, width, height = [float(value) for value in box]
+    scale = max(0.01, float(scale))
+    left = int(round(x * scale))
+    top = int(round(y * scale))
+    right = int(round((x + width) * scale))
+    bottom = int(round((y + height) * scale))
+    return left, top, max(1, right - left), max(1, bottom - top)
+
+
+def _ttp_scaled_overlap_edges(sample_box, overlap_edges, scale, out_width, out_height):
+    sx, sy, sw, sh = [float(value) for value in sample_box]
+    scale = max(0.01, float(scale))
+
+    def edge_before(start, amount, limit):
+        amount = _ttp_clamp(float(amount), 0.0, float(limit))
+        return max(0, int(round((start + amount) * scale)) - int(round(start * scale)))
+
+    def edge_after(start, length, amount, limit):
+        amount = _ttp_clamp(float(amount), 0.0, float(limit))
+        end = start + length
+        return max(0, int(round(end * scale)) - int(round((end - amount) * scale)))
+
+    return {
+        "left": _ttp_clamp(edge_before(sx, overlap_edges.get("left", 0), sw), 0, int(out_width)),
+        "right": _ttp_clamp(edge_after(sx, sw, overlap_edges.get("right", 0), sw), 0, int(out_width)),
+        "top": _ttp_clamp(edge_before(sy, overlap_edges.get("top", 0), sh), 0, int(out_height)),
+        "bottom": _ttp_clamp(edge_after(sy, sh, overlap_edges.get("bottom", 0), sh), 0, int(out_height)),
+    }
 
 
 def _ttp_smart_upscale_target_size(width, height, scale=2.0, round_to=8, max_megapixels=0.0):
@@ -1953,27 +2011,104 @@ def _ttp_clone_tile_set(tile_set):
     }
 
 
+def _ttp_mask_data_signature(mask_data):
+    if not isinstance(mask_data, dict):
+        return None
+    data = str(mask_data.get("data", "") or "")
+    digest = hashlib.sha1(data.encode("utf-8")).hexdigest()[:16] if data else ""
+    return {
+        "format": mask_data.get("format", ""),
+        "box": mask_data.get("box", []),
+        "width": mask_data.get("width", 0),
+        "height": mask_data.get("height", 0),
+        "hash": digest,
+    }
+
+
+def _ttp_debug_enabled():
+    return str(os.environ.get("TTP_SMART_TILE_DEBUG", "")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _ttp_debug_tile_set(label, tile_set=None, tile_meta=None, tile_images=None, extra=None):
+    if not _ttp_debug_enabled():
+        return
+    tile_meta = tile_meta if isinstance(tile_meta, dict) else (tile_set or {}).get("tile_meta", {})
+    tile_images = tile_images if tile_images is not None else (tile_set or {}).get("tile_images", [])
+    tiles = tile_meta.get("tiles", []) if isinstance(tile_meta, dict) else []
+    original_size = tile_meta.get("original_size", (tile_set or {}).get("original_size", [])) if isinstance(tile_meta, dict) else []
+    fingerprint = ""
+    try:
+        source = tile_set if isinstance(tile_set, dict) else {"tile_meta": tile_meta, "tile_images": tile_images, "original_size": original_size}
+        fingerprint = hashlib.sha1(_ttp_tile_set_fingerprint(source).encode("utf-8")).hexdigest()[:12]
+    except Exception:
+        fingerprint = "unavailable"
+    print(
+        f"[TTP Smart Tile Debug] {label}: original_size={original_size} "
+        f"tiles={len(tiles)} images={len(tile_images or [])} fingerprint={fingerprint} extra={extra or {}}"
+    )
+    for index, tile in enumerate(tiles[:64]):
+        image_size = None
+        if tile_images is not None and index < len(tile_images):
+            try:
+                image_size = _ttp_image_tensor_size(tile_images[index])
+            except Exception:
+                image_size = None
+        print(
+            "[TTP Smart Tile Debug] "
+            f"  tile[{index}] name={tile.get('name')} label={tile.get('label')} source={tile.get('source')} "
+            f"core={tile.get('core_box')} sample={tile.get('sample_box')} canvas={tile.get('tile_canvas_size')}/{tile.get('tile_canvas_box')} "
+            f"edges={tile.get('overlap_edges_px_source')} image_size={image_size} "
+            f"priority={tile.get('priority')} importance={tile.get('importance')} layer={tile.get('layer')} occ={tile.get('occlusion_priority')} "
+            f"mode={tile.get('recommended_composite_mode')} category={tile.get('semantic_category')} role={tile.get('semantic_role')} "
+            f"mask={_ttp_mask_data_signature(tile.get('object_mask'))} "
+            f"mask_source={_ttp_mask_data_signature(tile.get('object_mask_source'))}"
+        )
+    if len(tiles) > 64:
+        print(f"[TTP Smart Tile Debug]   ... {len(tiles) - 64} more tile(s)")
+
+
 def _ttp_tile_set_fingerprint(tile_set):
     tile_meta = tile_set.get("tile_meta", {})
     tiles = tile_meta.get("tiles", [])
+
+    def tile_signature(tile):
+        return {
+            "name": tile.get("name", ""),
+            "label": tile.get("label", ""),
+            "source": tile.get("source", ""),
+            "core_box": tile.get("core_box"),
+            "sample_box": tile.get("sample_box"),
+            "paste_box": tile.get("paste_box"),
+            "tile_canvas_size": tile.get("tile_canvas_size"),
+            "tile_canvas_box": tile.get("tile_canvas_box"),
+            "overlap_edges_px_source": tile.get("overlap_edges_px_source", {}),
+            "pad": tile.get("pad", 0),
+            "blend": tile.get("blend", 0),
+            "priority": tile.get("priority", 0),
+            "importance": tile.get("importance", 0),
+            "layer": tile.get("layer", 0),
+            "object_id": tile.get("object_id", 0),
+            "occlusion_priority": tile.get("occlusion_priority", 0),
+            "semantic_category": tile.get("semantic_category", ""),
+            "semantic_role": tile.get("semantic_role", ""),
+            "recommended_layer": tile.get("recommended_layer", ""),
+            "recommended_priority": tile.get("recommended_priority", ""),
+            "recommended_occlusion_priority": tile.get("recommended_occlusion_priority", ""),
+            "recommended_composite_mode": tile.get("recommended_composite_mode", ""),
+            "object_mask": _ttp_mask_data_signature(tile.get("object_mask")),
+            "object_mask_source": _ttp_mask_data_signature(tile.get("object_mask_source")),
+            "prompt": tile.get("prompt", ""),
+            "negative": tile.get("negative", ""),
+            "caption": tile.get("caption", ""),
+            "prompt_tag": tile.get("prompt_tag", ""),
+            "prompt_source": tile.get("prompt_source", ""),
+            "tile_hash": tile.get("tile_hash", ""),
+        }
+
     return json.dumps({
         "size": tile_set.get("original_size", tile_meta.get("original_size")),
         "count": len(tile_set.get("tile_images", [])),
-        "boxes": [tile.get("sample_box") for tile in tiles],
-        "names": [tile.get("name") for tile in tiles],
-        "masks": [bool(tile.get("object_mask")) for tile in tiles],
-        "prompts": [
-            {
-                "prompt": tile.get("prompt", ""),
-                "negative": tile.get("negative", ""),
-                "caption": tile.get("caption", ""),
-                "label": tile.get("label", ""),
-                "prompt_tag": tile.get("prompt_tag", ""),
-                "prompt_source": tile.get("prompt_source", ""),
-                "tile_hash": tile.get("tile_hash", ""),
-            }
-            for tile in tiles
-        ],
+        "tiles": [tile_signature(tile) for tile in tiles],
     }, sort_keys=True)
 
 
@@ -3374,6 +3509,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
     RETURN_NAMES = ("source_image", "tiles", "tile_set", "tile_meta", "positions", "preview", "layout_json")
     FUNCTION = "interactive_crop_tiles"
     CATEGORY = "TTP/Smart Tile"
+    OUTPUT_NODE = True
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
@@ -4001,6 +4137,19 @@ class TTP_Smart_Tile_Loop_Source_Experimental:
             or int(session.get("restart_request", -1)) != int(restart_request)
         )
         if should_restart:
+            if _ttp_debug_enabled():
+                reason = []
+                if session is None:
+                    reason.append("new_session")
+                elif session.get("fingerprint") != fingerprint:
+                    reason.append("fingerprint_changed")
+                if session is not None and int(session.get("restart_request", -1)) != int(restart_request):
+                    reason.append("restart_request_changed")
+                print(
+                    "[TTP Smart Tile Debug] loop_source restart "
+                    f"session={session_key} reason={','.join(reason) or 'unknown'} "
+                    f"restart_request={int(restart_request)}"
+                )
             session = {
                 "fingerprint": fingerprint,
                 "restart_request": int(restart_request),
@@ -4011,6 +4160,16 @@ class TTP_Smart_Tile_Loop_Source_Experimental:
                 "done": False,
             }
             _TTP_SMART_TILE_LOOP_SESSIONS[session_key] = session
+        elif _ttp_debug_enabled():
+            print(
+                "[TTP Smart Tile Debug] loop_source reuse "
+                f"session={session_key} index={session.get('index', 0)} done={session.get('done', False)}"
+            )
+        _ttp_debug_tile_set(
+            "loop_source input",
+            tile_set=tile_set,
+            extra={"session": session_key, "restart": bool(should_restart), "restart_request": int(restart_request)},
+        )
 
         count = len(tile_images)
         index = _ttp_clamp(int(session.get("index", 0)), 0, max(0, count - 1))
@@ -4090,6 +4249,17 @@ class TTP_Smart_Tile_Loop_Collect_Experimental:
         index = _ttp_clamp(int(tile_task.get("index", 0)), 0, max(0, count - 1))
         if not bool(tile_task.get("done", False)) and count > 0:
             tile_images[index] = _ttp_first_image_tensor(processed_image)
+        if _ttp_debug_enabled():
+            processed_size = None
+            try:
+                processed_size = _ttp_image_tensor_size(_ttp_first_image_tensor(processed_image))
+            except Exception:
+                processed_size = None
+            print(
+                "[TTP Smart Tile Debug] loop_collect update "
+                f"session={session_id} index={index} count={count} task_done={bool(tile_task.get('done', False))} "
+                f"processed_size={processed_size}"
+            )
 
         next_index = index + 1
         done = next_index >= count
@@ -4099,6 +4269,11 @@ class TTP_Smart_Tile_Loop_Collect_Experimental:
         event_task = dict(tile_task)
         event_task["index"] = min(next_index, max(0, count - 1))
         _ttp_send_smart_tile_loop_event(event_task, done=done, message=status)
+        _ttp_debug_tile_set(
+            "loop_collect output",
+            tile_set=processed_tile_set,
+            extra={"session": session_id, "next_index": int(next_index), "done": bool(done), "status": status},
+        )
         return (_ttp_clone_tile_set(processed_tile_set), bool(done), int(next_index), status)
 
 
@@ -4317,18 +4492,66 @@ class TTP_Smart_Tile_Output_Size_Estimate_Experimental:
 
     def estimate_output_size(self, tile_set, scale_strategy="median", source_image=None, done=None):
         if done is not None and not bool(done):
-            info = "deferred: waiting for done=true before estimating final Smart Tile output size"
-            return (0.0, 0, 0, 0.0, 0.0, info)
+            pending_scale = 1.0
+            pending_scale_x = 1.0
+            pending_scale_y = 1.0
+            pending_width = 1
+            pending_height = 1
+            tile_meta = tile_set.get("tile_meta") if isinstance(tile_set, dict) else None
+            if isinstance(tile_meta, dict):
+                original_width, original_height = tile_meta.get("original_size", [1, 1])
+                original_width = max(1, int(round(original_width)))
+                original_height = max(1, int(round(original_height)))
+                pending_width = original_width
+                pending_height = original_height
+                if source_image is not None:
+                    source_width, source_height = _ttp_image_tensor_size(source_image[0])
+                    pending_width = max(1, int(source_width))
+                    pending_height = max(1, int(source_height))
+                    pending_scale_x = pending_width / max(1, original_width)
+                    pending_scale_y = pending_height / max(1, original_height)
+                    pending_scale = float(np.median([pending_scale_x, pending_scale_y]))
+            info = (
+                "deferred: waiting for done=true before estimating final Smart Tile output size; "
+                "returning safe pending size for downstream ImageScale nodes"
+            )
+            _ttp_debug_tile_set(
+                "size_estimate skipped",
+                tile_set=tile_set,
+                extra={
+                    "done": bool(done),
+                    "strategy": str(scale_strategy),
+                    "output_scale": float(pending_scale),
+                    "output_size": [int(pending_width), int(pending_height)],
+                    "scale_x": float(pending_scale_x),
+                    "scale_y": float(pending_scale_y),
+                    "info": info,
+                },
+            )
+            return (float(pending_scale), int(pending_width), int(pending_height), float(pending_scale_x), float(pending_scale_y), info)
         if not isinstance(tile_set, dict) or tile_set.get("type") != "ttp_smart_tile_set":
             raise ValueError("tile_set must come from TTP Smart Tile Interactive Crop or Loop Collect.")
         tile_meta = tile_set.get("tile_meta")
         tile_images = tile_set.get("tile_images", [])
-        return _ttp_estimate_smart_tile_output_size(
+        result = _ttp_estimate_smart_tile_output_size(
             tile_meta,
             tile_images,
             scale_strategy=str(scale_strategy),
             source_image=source_image,
         )
+        _ttp_debug_tile_set(
+            "size_estimate input",
+            tile_set=tile_set,
+            extra={
+                "done": None if done is None else bool(done),
+                "strategy": str(scale_strategy),
+                "output_scale": float(result[0]),
+                "output_size": [int(result[1]), int(result[2])],
+                "scale_x": float(result[3]),
+                "scale_y": float(result[4]),
+            },
+        )
+        return result
 
 
 class TTP_Smart_Tile_Assemble_Experimental:
@@ -4354,6 +4577,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 "assemble_device": (["auto", "cpu", "gpu"], {"default": "auto"}),
                 "assemble_mode": (["final_only", "always"], {"default": "final_only"}),
                 "base_canvas_mode": (["auto", "black", "base_image", "source_image"], {"default": "auto"}),
+                "weight_preview_mode": (["raw_weight", "coverage"], {"default": "raw_weight"}),
                 "small_tile_on_top": ("BOOLEAN", {"default": False}),
                 "auto_composite_policy": (["safe_auto", "strict_layer", "soft_detail", "replace_object"], {"default": "safe_auto"}),
             },
@@ -4393,6 +4617,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
         assemble_device="auto",
         assemble_mode="final_only",
         base_canvas_mode="auto",
+        weight_preview_mode="raw_weight",
         small_tile_on_top=False,
         auto_composite_policy="safe_auto",
         sampled_tiles=None,
@@ -4429,6 +4654,9 @@ class TTP_Smart_Tile_Assemble_Experimental:
             effective_assemble_mode = "final_only"
 
         canvas_mode = str(base_canvas_mode or "auto")
+        preview_mode = str(weight_preview_mode or "raw_weight")
+        if preview_mode not in ("raw_weight", "coverage"):
+            preview_mode = "raw_weight"
         if canvas_mode == "base_image":
             base_source_image = base_image
         elif canvas_mode == "source_image":
@@ -4440,6 +4668,18 @@ class TTP_Smart_Tile_Assemble_Experimental:
             base_source_image = base_image if base_image is not None else source_image
 
         if effective_assemble_mode == "final_only" and done is not None and not bool(done):
+            _ttp_debug_tile_set(
+                "assemble skipped",
+                tile_set=tile_set,
+                tile_meta=tile_meta,
+                tile_images=tile_images,
+                extra={
+                    "done": bool(done),
+                    "requested_mode": requested_assemble_mode,
+                    "effective_mode": effective_assemble_mode,
+                    "base_canvas_mode": canvas_mode,
+                },
+            )
             return _ttp_assemble_placeholder_output(tile_images, base_image=base_source_image)
 
         original_width, original_height = tile_meta["original_size"]
@@ -4480,6 +4720,27 @@ class TTP_Smart_Tile_Assemble_Experimental:
         if assemble_torch_device is None and assemble_device_mode == "gpu":
             assemble_fallback_reason = "gpu_unavailable"
         use_gpu_assemble = assemble_torch_device is not None
+        _ttp_debug_tile_set(
+            "assemble input",
+            tile_set=tile_set,
+            tile_meta=tile_meta,
+            tile_images=tile_images,
+            extra={
+                "done": None if done is None else bool(done),
+                "output_scale": float(output_scale),
+                "output_size": [int(output_width), int(output_height)],
+                "requested_device": assemble_device_mode,
+                "actual_device": str(assemble_torch_device) if use_gpu_assemble else "cpu",
+                "requested_mode": requested_assemble_mode,
+                "effective_mode": effective_assemble_mode,
+                "base_canvas_mode": canvas_mode,
+                "weight_preview_mode": preview_mode,
+                "small_tile_on_top": _ttp_safe_bool(small_tile_on_top, False),
+                "auto_composite_policy": str(auto_composite_policy or "safe_auto"),
+                "mask_blend_mode": str(mask_blend_mode),
+                "large_tile_policy": str(large_tile_policy),
+            },
+        )
 
         if base_source_image is not None:
             base_pil = tensor2pil(base_source_image[0].unsqueeze(0)).convert("RGB")
@@ -4489,22 +4750,27 @@ class TTP_Smart_Tile_Assemble_Experimental:
             if use_gpu_assemble:
                 canvas = torch.as_tensor(base_array, dtype=torch.float32, device=assemble_torch_device)
                 weights = torch.ones((output_height, output_width, 1), dtype=torch.float32, device=assemble_torch_device)
+                preview_weights = torch.zeros((output_height, output_width, 1), dtype=torch.float32, device=assemble_torch_device)
             else:
                 canvas = base_array
                 weights = np.ones((output_height, output_width, 1), dtype=np.float32)
+                preview_weights = np.zeros((output_height, output_width, 1), dtype=np.float32)
         else:
             if use_gpu_assemble:
                 canvas = torch.zeros((output_height, output_width, 3), dtype=torch.float32, device=assemble_torch_device)
                 weights = torch.zeros((output_height, output_width, 1), dtype=torch.float32, device=assemble_torch_device)
+                preview_weights = torch.zeros((output_height, output_width, 1), dtype=torch.float32, device=assemble_torch_device)
             else:
                 canvas = np.zeros((output_height, output_width, 3), dtype=np.float32)
                 weights = np.zeros((output_height, output_width, 1), dtype=np.float32)
+                preview_weights = np.zeros((output_height, output_width, 1), dtype=np.float32)
 
-        small_tile_on_top = bool(small_tile_on_top)
+        small_tile_on_top = _ttp_safe_bool(small_tile_on_top, False)
         composite_policy = str(auto_composite_policy or "safe_auto")
         if composite_policy not in ("safe_auto", "strict_layer", "soft_detail", "replace_object"):
             composite_policy = "safe_auto"
         auto_policy_ranking = composite_policy in ("safe_auto", "soft_detail", "replace_object")
+        destructive_occlusion = composite_policy in ("strict_layer", "replace_object")
         auto_policy_candidates = auto_policy_ranking and any(
             not _ttp_is_context_tile_text(_ttp_tile_search_text(tile)) and (
                 _ttp_is_detail_tile_text(_ttp_tile_search_text(tile))
@@ -4576,7 +4842,10 @@ class TTP_Smart_Tile_Assemble_Experimental:
             tile_scale_x = content_width / max(1, sw)
             tile_scale_y = content_height / max(1, sh)
             tile_effective_scale = min(tile_scale_x, tile_scale_y)
-            tile_area_ratio = (float(sw) * float(sh)) / original_area
+            core_box = tile.get("core_box", [sx, sy, sw, sh])
+            core_w = float(core_box[2]) if len(core_box) >= 4 else float(sw)
+            core_h = float(core_box[3]) if len(core_box) >= 4 else float(sh)
+            tile_area_ratio = (max(1.0, core_w) * max(1.0, core_h)) / original_area
             tile_label = str(tile.get("label", tile.get("source", ""))).lower()
             is_context_label = any(word in tile_label for word in ("background", "context", "full image", "full_image", "large context"))
             is_large_tile = tile_area_ratio >= large_tile_area_threshold or is_context_label
@@ -4598,10 +4867,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
             local_bottom = _ttp_clamp(content_top + content_height, local_top + 1, tile_pil.height)
 
             paste_region = tile_pil.crop((local_left, local_top, local_right, local_bottom))
-            out_x = int(round(sx * output_scale))
-            out_y = int(round(sy * output_scale))
-            out_w = max(1, int(round(sw * output_scale)))
-            out_h = max(1, int(round(sh * output_scale)))
+            out_x, out_y, out_w, out_h = _ttp_scaled_source_box([sx, sy, sw, sh], output_scale)
             crop_px = max(0, int(edge_crop_px))
             if crop_px > 0 and paste_region.width > crop_px * 2 and paste_region.height > crop_px * 2:
                 paste_region = paste_region.crop((
@@ -4628,25 +4894,51 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 paste_region = tensor2pil(corrected[0].unsqueeze(0)).convert("RGB")
 
             blend = int(round(tile.get("blend", 0) * output_scale * blend_multiplier))
+            scaled_overlap_edges = _ttp_scaled_overlap_edges(
+                [sx, sy, sw, sh],
+                tile.get("overlap_edges_px_source", {}),
+                output_scale,
+                out_w,
+                out_h,
+            )
             mask = _ttp_create_sample_blend_mask(
                 out_w,
                 out_h,
-                tile.get("overlap_edges_px_source", {}),
+                scaled_overlap_edges,
                 blend,
-                output_scale,
-                output_scale,
+                1.0,
+                1.0,
             )
             object_mask = _ttp_tile_object_mask_array(tile, out_w, out_h, str(mask_blend_mode), blend)
             if object_mask is not None:
                 if soft_detail_overlay and str(mask_blend_mode) in ("auto", "mask_feather", "mask_only"):
                     blur_px = max(1.0, min(8.0, max(float(blend) * 0.08, min(out_w, out_h) * 0.012)))
+                    object_halo = _ttp_soften_detail_mask_array(
+                        object_mask,
+                        grow_px=max(1, int(round(min(out_w, out_h) * 0.018))),
+                        blur_px=max(blur_px, min(out_w, out_h) * 0.018),
+                    )
                     object_mask = _ttp_soften_detail_mask_array(object_mask, grow_px=0, blur_px=blur_px)
+                    if str(mask_blend_mode) in ("auto", "mask_feather"):
+                        halo_strength = _ttp_clamp(max(0.12, float(context_tile_weight) * 0.65), 0.05, 0.22)
+                        object_mask = np.maximum(object_mask, object_halo * halo_strength)
                 if str(mask_blend_mode) == "mask_only":
                     mask = object_mask
                 else:
                     mask = mask * object_mask
             elif _ttp_should_rect_feather_tile(tile, is_large_tile, str(mask_blend_mode)):
                 mask = mask * _ttp_rect_feather_mask(out_w, out_h, blend)
+            tile_destructive_occlusion = destructive_occlusion or (
+                composite_policy == "safe_auto"
+                and object_mask is not None
+                and not soft_detail_overlay
+            ) or (
+                composite_policy == "safe_auto"
+                and has_base_canvas
+                and is_large_tile
+                and not low_resolution_large_tile
+                and large_tile_policy != "context_only"
+            )
             coverage_mask = np.clip(mask.copy(), 0.0, 1.0)
             importance = max(0.0, float(tile.get("importance", 1.0)))
             priority = max(0.0, float(tile.get("priority", 50.0)))
@@ -4679,6 +4971,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 rank_occlusion = min(rank_occlusion, 0.0)
                 rank_layer = min(rank_layer, 0.0)
                 rank_priority = 0.0
+            clear_mask = coverage_mask if destructive_occlusion else np.clip(mask, 0.0, 1.0)
 
             region = np.array(paste_region).astype(np.float32) / 255.0
             if str(pixel_alignment) != "off":
@@ -4767,6 +5060,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
             region = region[region_top:region_top + region_h, region_left:region_left + region_w]
             mask = mask[region_top:region_top + region_h, region_left:region_left + region_w]
             coverage_mask = coverage_mask[region_top:region_top + region_h, region_left:region_left + region_w]
+            clear_mask = clear_mask[region_top:region_top + region_h, region_left:region_left + region_w]
             if str(color_correction) == "local_mean_std":
                 ref = color_reference_pil
                 if ref.size != (output_width, output_height):
@@ -4785,6 +5079,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                     region_t = torch.as_tensor(region, dtype=torch.float32, device=assemble_torch_device)
                     coverage_t = torch.as_tensor(coverage_mask, dtype=torch.float32, device=assemble_torch_device)
                 mask_t = torch.as_tensor(mask, dtype=torch.float32, device=assemble_torch_device)
+                clear_t = torch.as_tensor(clear_mask, dtype=torch.float32, device=assemble_torch_device)
                 if use_occlusion:
                     rank = rank_occlusion * 1000000.0 + rank_layer * 10000.0 + (rank_priority if use_priority else 0.0)
                     rank_view = priority_ranks[paste_y:y_end, paste_x:x_end]
@@ -4793,21 +5088,27 @@ class TTP_Smart_Tile_Assemble_Experimental:
                     eligible = (rank >= rank_view - 1e-6) & mask_active
                     canvas_view = canvas[paste_y:y_end, paste_x:x_end]
                     weights_view = weights[paste_y:y_end, paste_x:x_end]
+                    preview_view = preview_weights[paste_y:y_end, paste_x:x_end]
                     if soft_detail_overlay:
                         protect = higher & (coverage_t >= 0.5)
                         rank_view[protect] = rank
+                    elif not tile_destructive_occlusion:
+                        pass
                     else:
-                        higher_alpha = coverage_t * higher.to(dtype=torch.float32)
+                        higher_alpha = clear_t * higher.to(dtype=torch.float32)
                         keep = 1.0 - higher_alpha
                         canvas_view.mul_(keep)
                         weights_view.mul_(keep)
+                        preview_view.mul_(keep)
                         rank_view[higher] = rank
                     eligible_f = eligible.to(dtype=torch.float32)
                     canvas_view.add_(region_t * mask_t * eligible_f)
                     weights_view.add_(mask_t * eligible_f)
+                    preview_view.add_(coverage_t * eligible_f)
                 else:
                     canvas[paste_y:y_end, paste_x:x_end].add_(region_t * mask_t)
                     weights[paste_y:y_end, paste_x:x_end].add_(mask_t)
+                    preview_weights[paste_y:y_end, paste_x:x_end].add_(coverage_t)
             elif use_occlusion:
                 rank = rank_occlusion * 1000000.0 + rank_layer * 10000.0 + (rank_priority if use_priority else 0.0)
                 rank_view = priority_ranks[paste_y:y_end, paste_x:x_end]
@@ -4816,21 +5117,27 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 eligible = (rank >= rank_view - 1e-6) & mask_active
                 canvas_view = canvas[paste_y:y_end, paste_x:x_end]
                 weights_view = weights[paste_y:y_end, paste_x:x_end]
+                preview_view = preview_weights[paste_y:y_end, paste_x:x_end]
                 if np.any(higher):
                     if soft_detail_overlay:
                         protect = higher & (coverage_mask >= 0.5)
                         rank_view[protect[:, :, 0], :] = rank
+                    elif not tile_destructive_occlusion:
+                        pass
                     else:
-                        higher_alpha = coverage_mask * higher.astype(np.float32)
+                        higher_alpha = clear_mask * higher.astype(np.float32)
                         keep = 1.0 - higher_alpha
                         canvas_view *= keep
                         weights_view *= keep
+                        preview_view *= keep
                         rank_view[higher[:, :, 0], :] = rank
                 canvas_view += region * mask * eligible
                 weights_view += mask * eligible
+                preview_view += coverage_mask * eligible
             else:
                 canvas[paste_y:y_end, paste_x:x_end] += region * mask
                 weights[paste_y:y_end, paste_x:x_end] += mask
+                preview_weights[paste_y:y_end, paste_x:x_end] += coverage_mask
 
         if str(pixel_alignment) != "off":
             devices = ",".join(sorted(alignment_stats["devices"])) or ("cpu" if alignment_stats["cpu"] else "none")
@@ -4855,14 +5162,21 @@ class TTP_Smart_Tile_Assemble_Experimental:
         if use_gpu_assemble:
             safe_weights = torch.clamp(weights, min=1e-6)
             output = torch.clamp(canvas / safe_weights, 0.0, 1.0).detach().cpu()
-            max_weight = torch.clamp(weights.max(), min=1e-6)
-            weight_preview = torch.clamp(weights / max_weight, 0.0, 1.0).repeat(1, 1, 3).detach().cpu()
+            if preview_mode == "coverage":
+                weight_preview = (preview_weights > 1e-6).to(dtype=torch.float32)
+            else:
+                max_weight = torch.clamp(preview_weights.max(), min=1e-6)
+                weight_preview = torch.clamp(preview_weights / max_weight, 0.0, 1.0)
+            weight_preview = weight_preview.repeat(1, 1, 3).detach().cpu()
             return (output.unsqueeze(0), weight_preview.unsqueeze(0))
 
         safe_weights = np.maximum(weights, 1e-6)
         output = canvas / safe_weights
         output = np.clip(output, 0.0, 1.0)
-        weight_preview = np.clip(weights / max(1e-6, weights.max()), 0.0, 1.0)
+        if preview_mode == "coverage":
+            weight_preview = (preview_weights > 1e-6).astype(np.float32)
+        else:
+            weight_preview = np.clip(preview_weights / max(float(preview_weights.max()), 1e-6), 0.0, 1.0).astype(np.float32)
         weight_preview = np.repeat(weight_preview, 3, axis=2)
 
         return (
