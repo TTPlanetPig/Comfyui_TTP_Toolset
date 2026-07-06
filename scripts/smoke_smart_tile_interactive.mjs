@@ -77,6 +77,7 @@ assert(/MASK_OVERLAY_COLORS/.test(source), "tile editor should define distinct c
 assert(/function maskOverlayEnabled/.test(source), "tile editor should expose a mask overlay toggle state");
 assert(/async function renderMaskOverlay/.test(source), "tile editor should render object masks as a colored overlay");
 assert(/tintedMaskCanvas/.test(source), "tile editor should tint mask pixels before showing overlays");
+assert(!/canvas\.isConnected/.test(source), "mask overlay rendering should not require the staged canvas to be connected before renderEditor appends it");
 assert(/Show masks/.test(source), "tile editor should expose a show masks toggle");
 assert(/Hide masks/.test(source), "tile editor should expose a hide masks toggle");
 assert(/ttpSmartTileShowMasks/.test(source), "mask overlay visibility should be stored on the editor node instance");

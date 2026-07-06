@@ -284,7 +284,7 @@ async function renderMaskOverlay(node, canvas, tiles) {
     context.clearRect(0, 0, canvas.width, canvas.height);
 
     for (const [index, tile] of tiles.entries()) {
-        if (node.ttpSmartTileMaskOverlayToken !== token || !canvas.isConnected) {
+        if (node.ttpSmartTileMaskOverlayToken !== token) {
             return;
         }
         const maskData = ownObjectMaskData(tile);
@@ -293,7 +293,7 @@ async function renderMaskOverlay(node, canvas, tiles) {
             continue;
         }
         const maskImage = await loadObjectMaskImage(maskData);
-        if (node.ttpSmartTileMaskOverlayToken !== token || !canvas.isConnected || !maskImage) {
+        if (node.ttpSmartTileMaskOverlayToken !== token || !maskImage) {
             return;
         }
         const color = MASK_OVERLAY_COLORS[index % MASK_OVERLAY_COLORS.length];
