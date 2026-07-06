@@ -4178,13 +4178,14 @@ class TTP_Smart_Tile_Prompt_Override_Experimental:
     def _selector_terms(selector):
         return [
             part.strip()
-            for part in re.split(r"[,;\n]+", str(selector or ""))
+            for part in re.split(r"[,;，、\n\r]+", str(selector or ""))
             if part.strip()
         ]
 
     @staticmethod
-    def _selector_index_set(selector, count):
-        indexes = set()
+    def _selector_index_order(selector, count):
+        indexes = []
+        seen = set()
         for term in TTP_Smart_Tile_Prompt_Override_Experimental._selector_terms(selector):
             cleaned = term.strip()
             t_range = re.match(r"^[tT]\s*(\d+)\s*-\s*[tT]?\s*(\d+)$", cleaned)
@@ -4206,8 +4207,16 @@ class TTP_Smart_Tile_Prompt_Override_Experimental:
             if end < start:
                 start, end = end, start
             for index in range(start, end + 1):
-                if 0 <= index < count:
-                    indexes.add(index)
+                if 0 <= index < count and index not in seen:
+                    indexes.append(index)
+                    seen.add(index)
+        return indexes
+
+    @staticmethod
+    def _selector_index_set(selector, count):
+        indexes = set()
+        for index in TTP_Smart_Tile_Prompt_Override_Experimental._selector_index_order(selector, count):
+            indexes.add(index)
         return indexes
 
     @staticmethod
@@ -4567,6 +4576,126 @@ class TTP_Smart_Tile_Composite_Override_Experimental:
             for record in records
         )
         return (next_tile_set, composite_json, "\n".join(summary_lines))
+
+
+class TTP_Smart_Tile_Stack_Order_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "tile_set": ("TTP_SMART_TILE_SET", {"forceInput": True}),
+                "tile_order": ("STRING", {"default": "T1,T3,T2", "multiline": False}),
+                "top_order": (["first_on_top", "last_on_top"], {"default": "first_on_top"}),
+                "composite_mode": (["replace_tile", "keep"], {"default": "replace_tile"}),
+                "replace_tile_shape": (["keep", "mask_first", "tile_box_first"], {"default": "keep"}),
+            }
+        }
+
+    RETURN_TYPES = ("TTP_SMART_TILE_SET", "STRING", "STRING")
+    RETURN_NAMES = ("tile_set", "order_json", "summary")
+    FUNCTION = "apply_stack_order"
+    CATEGORY = "TTP/Smart Tile"
+
+    @staticmethod
+    def _position_for_tile(tile):
+        return TTP_Smart_Tile_Prompt_Override_Experimental._position_for_tile(tile)
+
+    def apply_stack_order(
+        self,
+        tile_set,
+        tile_order="T1,T3,T2",
+        top_order="first_on_top",
+        composite_mode="replace_tile",
+        replace_tile_shape="keep",
+    ):
+        tile_images, _tile_meta, tiles_info = _ttp_validate_tile_set(tile_set)
+        count = len(tiles_info)
+        ordered_indexes = TTP_Smart_Tile_Prompt_Override_Experimental._selector_index_order(tile_order, count)
+        if not ordered_indexes:
+            raise ValueError("Smart Tile stack order matched no tiles. Use indexes like T1,T3,T2.")
+
+        next_tile_set = _ttp_clone_tile_set(tile_set)
+        next_tiles = next_tile_set["tile_meta"]["tiles"]
+        next_images = list(next_tile_set.get("tile_images", []))
+        next_positions = list(next_tile_set.get("positions", []))
+
+        max_layer = max((_ttp_safe_float(tile.get("layer", 0.0), 0.0) for tile in next_tiles), default=0.0)
+        max_occlusion = max((_ttp_safe_float(tile.get("occlusion_priority", 0.0), 0.0) for tile in next_tiles), default=0.0)
+        step = 1000.0
+        first_on_top = str(top_order or "first_on_top") == "first_on_top"
+        composite_mode = str(composite_mode or "replace_tile")
+        replace_tile_shape = str(replace_tile_shape or "keep")
+        order_rank = {}
+        order_position = {}
+        ordered_count = len(ordered_indexes)
+        for rank, index in enumerate(ordered_indexes):
+            stack_rank = ordered_count - rank if first_on_top else rank + 1
+            order_rank[index] = stack_rank
+            order_position[index] = rank
+
+        records = []
+        for index, tile in enumerate(next_tiles):
+            if index not in order_rank:
+                continue
+            stack_rank = order_rank[index]
+            before = {
+                "layer": tile.get("layer", 0.0),
+                "occlusion_priority": tile.get("occlusion_priority", 0.0),
+                "composite_mode": tile.get("composite_mode", tile.get("recommended_composite_mode", "")),
+                "replace_tile_shape": tile.get("replace_tile_shape", ""),
+            }
+            tile["layer"] = max_layer + float(stack_rank)
+            tile["occlusion_priority"] = max_occlusion + float(stack_rank) * step
+            if composite_mode != "keep":
+                tile["composite_mode"] = composite_mode
+                tile["recommended_composite_mode"] = composite_mode
+            if replace_tile_shape != "keep":
+                tile["replace_tile_shape"] = _ttp_normalize_replace_tile_shape(replace_tile_shape)
+            tile["stack_order_override"] = True
+            tile["stack_order_selector"] = str(tile_order or "")
+            tile["stack_order_position"] = int(ordered_indexes.index(index) + 1)
+            tile["stack_order_top_rank"] = float(stack_rank)
+            records.append({
+                "index": int(index),
+                "selector": f"T{index + 1}",
+                "name": tile.get("name", f"tile_{index}"),
+                "before": before,
+                "after": {
+                    "layer": tile.get("layer", 0.0),
+                    "occlusion_priority": tile.get("occlusion_priority", 0.0),
+                    "composite_mode": tile.get("composite_mode", tile.get("recommended_composite_mode", "")),
+                    "replace_tile_shape": tile.get("replace_tile_shape", ""),
+                    "top_rank": float(stack_rank),
+                },
+            })
+        records.sort(key=lambda record: order_position.get(int(record["index"]), count))
+
+        if len(next_positions) < len(next_tiles):
+            next_tile_set["positions"] = [
+                next_positions[index] if index < len(next_positions) else self._position_for_tile(tile)
+                for index, tile in enumerate(next_tiles)
+            ]
+        else:
+            next_tile_set["positions"] = next_positions
+        next_tile_set["tile_images"] = next_images if next_images else list(tile_images)
+
+        order_json = json.dumps({
+            "type": "ttp_smart_tile_stack_order",
+            "tile_order": str(tile_order or ""),
+            "top_order": str(top_order or "first_on_top"),
+            "composite_mode": composite_mode,
+            "replace_tile_shape": replace_tile_shape,
+            "matched": int(len(records)),
+            "tiles": records,
+        }, ensure_ascii=False, indent=2)
+        summary_lines = [
+            f"matched={len(records)} order={tile_order} top_order={top_order} mode={composite_mode}"
+        ]
+        summary_lines.extend(
+            f'{record["selector"]}:{record["name"]} layer={record["after"]["layer"]} occ={record["after"]["occlusion_priority"]}'
+            for record in records
+        )
+        return (next_tile_set, order_json, "\n".join(summary_lines))
 
 
 class TTP_Smart_Tile_Loop_Source_Experimental:
@@ -6607,6 +6736,7 @@ NODE_CLASS_MAPPINGS = {
     "TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental": TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental,
     "TTP_Smart_Tile_Prompt_Override_Experimental": TTP_Smart_Tile_Prompt_Override_Experimental,
     "TTP_Smart_Tile_Composite_Override_Experimental": TTP_Smart_Tile_Composite_Override_Experimental,
+    "TTP_Smart_Tile_Stack_Order_Experimental": TTP_Smart_Tile_Stack_Order_Experimental,
     "TTP_Smart_Tile_Loop_Source_Experimental": TTP_Smart_Tile_Loop_Source_Experimental,
     "TTP_Smart_Tile_Loop_Collect_Experimental": TTP_Smart_Tile_Loop_Collect_Experimental,
     "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": TTP_Smart_Tile_Image_Upscale_Prep_Experimental,
@@ -6634,6 +6764,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental": "TTP Smart Tile QwenVL Prompt Set Builder",
     "TTP_Smart_Tile_Prompt_Override_Experimental": "TTP Smart Tile Prompt Override",
     "TTP_Smart_Tile_Composite_Override_Experimental": "TTP Smart Tile Composite Override",
+    "TTP_Smart_Tile_Stack_Order_Experimental": "TTP Smart Tile Stack Order",
     "TTP_Smart_Tile_Loop_Source_Experimental": "TTP Smart Tile Loop Source",
     "TTP_Smart_Tile_Loop_Collect_Experimental": "TTP Smart Tile Loop Collect",
     "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": "TTP Smart Tile Image Upscale Prep",

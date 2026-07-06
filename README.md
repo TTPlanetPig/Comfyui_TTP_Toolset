@@ -57,6 +57,7 @@ When subdividing a masked tile with `Grid in`, the Mask mode can crop the origin
 | `TTP Smart Tile QwenVL Prompt Set Builder` | Generate per-tile prompts before loop processing. |
 | `TTP Smart Tile Prompt Override` | Filter selected tiles and replace, prepend, append, or find/replace per-tile prompts before sampling. |
 | `TTP Smart Tile Composite Override` | Filter selected tiles and set composite mode, replace shape, layer, priority, occlusion priority, blend, and importance before assembly. |
+| `TTP Smart Tile Stack Order` | Put tiles such as `T1,T3,T2` at the front in that order, leaving all unlisted tiles behind. |
 | `TTP Smart Tile Semantic Rank` | Classify tiles and write recommended layer, priority, scale weight, and composite metadata. |
 | `TTP Smart Tile Loop Source` | Output one tile at a time for VAE Encode / sampler / VAE Decode. |
 | `TTP Smart Tile Loop Collect` | Collect each processed tile back into the same tile set. |
@@ -77,6 +78,7 @@ TTP Smart Tile Interactive Crop
   -> VAE Encode / Sampler / VAE Decode
   -> TTP Smart Tile Loop Collect
   -> TTP Smart Tile Semantic Rank (optional final refresh)
+  -> TTP Smart Tile Stack Order (optional final manual order)
   -> TTP Smart Tile Output Size Estimate (optional)
   -> TTP Smart Tile Assemble
   -> TTP Smart Tile Save Final Image
@@ -120,6 +122,7 @@ This workflow is the recommended full Smart Tile loop. It uses `TTP Smart Tile I
 | `QwenVL Prompt Set Builder` | `reference_image_mode=first_message`, `prompt_preset=tile_img2img_prompt`, `output_language=chinese` | Builds prompts before the tile loop, then `Loop Source.prompt` feeds the text encoder. / 在循环前一次性生成每块提示词，然后由 `Loop Source.prompt` 送入文本编码。 |
 | `Prompt Override` | `selector_type=label`, `selector=face`, `prompt_mode=replace` | Rewrites only matched tile prompts. Use `drop_unmatched` when only selected regions should run through an edit sampler and Assemble should keep the rest from `source_image`. / 只改写匹配 tile 的提示词；局部 edit 时可用 `drop_unmatched`，其余区域由 Assemble 的 `source_image` 底图保留。 |
 | `Composite Override` | `selector_type=index`, `selector=T3`, `composite_mode=replace_tile`, `replace_tile_shape=mask_first`, `occlusion_priority_mode=max` | Puts selected tiles above lower layers and makes them hard-replace the canvas. `mask_first` uses an object mask when present and hardens the mask interior like an inpaint stitch; `tile_box_first` ignores the mask and replaces the full tile box. / 把指定 tile 放到更高层并硬替换画布；`mask_first` 有 mask 就按 mask 替换，并像 inpaint stitch 一样硬化 mask 主体；`tile_box_first` 即使有 mask 也按完整 tile 方块替换。 |
+| `Stack Order` | `tile_order=T1,T3,T2`, `top_order=first_on_top`, `composite_mode=replace_tile` | Makes the listed tiles the front stack in the typed order while all unlisted tiles stay behind. Place it after the final `Semantic Rank` so manual order wins. The tiles keep their own `blend` and mask feathering. / 按填写顺序把这些 tile 放到最前面，未填写的 tile 都在后面；建议放在最终 `Semantic Rank` 后面，让手动顺序最后生效；tile 仍使用各自的 `blend` 和 mask 羽化。 |
 | `Image Upscale Prep` | `scale=2.5`, `round_to=8`, `max_megapixels=1.5`, `use_upscale_model=true` | Enlarges each tile before img2img while keeping each tile under the megapixel cap. / 采样前放大每块 tile，同时用百万像素上限控制显存。 |
 | `Loop Source` / `Loop Collect` | `Process All Tiles` workflow | The tile count can be 4, 8, 16, or any layout count; no manual sampler duplication is needed. / 分块数量可以变化，不需要手动复制多套 sampler。 |
 | `Output Size Estimate` | `focus_weighted` | Estimates the final canvas from processed tile sizes, giving more influence to focus/detail tiles. / 根据处理后的 tile 尺寸估算最终画布，并更重视细节块。 |

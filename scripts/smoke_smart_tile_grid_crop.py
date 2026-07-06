@@ -373,6 +373,47 @@ assert_equal(composited_tile["occlusion_priority"], 60000, "composite override s
 assert_equal(composited_tile["blend"], 24, "composite override should set selected tile blend")
 assert_equal(json.loads(composite_json)["matched"], 1, "composite override JSON should report matched tile count")
 assert_equal("matched=1" in composite_summary, True, "composite override summary should report matched count")
+stack_order_inputs = ttp.TTP_Smart_Tile_Stack_Order_Experimental.INPUT_TYPES()
+assert_equal(stack_order_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "stack order should accept Smart Tile Set")
+assert_equal(stack_order_inputs["required"]["tile_set"][1].get("forceInput"), True, "stack order tile_set should be a forceInput connection")
+assert_equal(stack_order_inputs["required"]["top_order"][0], ["first_on_top", "last_on_top"], "stack order should expose top order direction")
+assert_equal(stack_order_inputs["required"]["composite_mode"][1]["default"], "replace_tile", "stack order should default to replace-tile compositing")
+assert_equal(
+    ttp.NODE_CLASS_MAPPINGS["TTP_Smart_Tile_Stack_Order_Experimental"],
+    ttp.TTP_Smart_Tile_Stack_Order_Experimental,
+    "stack order should be registered",
+)
+stack_order_tile_set = {
+    "version": 1,
+    "type": "ttp_smart_tile_set",
+    "original_size": [100, 100],
+    "tile_meta": {
+        "version": 3,
+        "type": "ttp_smart_tile",
+        "storage": "tile_set",
+        "original_size": [100, 100],
+        "tiles": [
+            {"id": 0, "name": "tile_1", "core_box": [0, 0, 50, 50], "sample_box": [0, 0, 50, 50], "layer": 0, "occlusion_priority": 0},
+            {"id": 1, "name": "tile_2", "core_box": [0, 0, 50, 50], "sample_box": [0, 0, 50, 50], "layer": 0, "occlusion_priority": 0},
+            {"id": 2, "name": "tile_3", "core_box": [0, 0, 50, 50], "sample_box": [0, 0, 50, 50], "layer": 0, "occlusion_priority": 0},
+            {"id": 3, "name": "tile_4", "core_box": [0, 0, 50, 50], "sample_box": [0, 0, 50, 50], "layer": 1, "occlusion_priority": 80000},
+        ],
+    },
+    "tile_images": ["tile_1", "tile_2", "tile_3", "tile_4"],
+}
+stack_node = ttp.TTP_Smart_Tile_Stack_Order_Experimental()
+stacked_set, stack_json, stack_summary = stack_node.apply_stack_order(
+    stack_order_tile_set,
+    tile_order="T1，T3，T2",
+)
+stacked_tiles = stacked_set["tile_meta"]["tiles"]
+assert_equal(stacked_tiles[0]["occlusion_priority"] > stacked_tiles[2]["occlusion_priority"], True, "stack order should make the first listed tile topmost by default")
+assert_equal(stacked_tiles[2]["occlusion_priority"] > stacked_tiles[1]["occlusion_priority"], True, "stack order should preserve listed ordering between selected tiles")
+assert_equal(stacked_tiles[1]["occlusion_priority"] > stacked_tiles[3]["occlusion_priority"], True, "stack order should place listed tiles above unlisted tiles")
+assert_equal(stacked_tiles[0]["composite_mode"], "replace_tile", "stack order should default selected tiles to replace_tile mode")
+assert_equal("composite_mode" in stacked_tiles[3], False, "stack order should not change unlisted tile composite mode")
+assert_equal(json.loads(stack_json)["tiles"][1]["selector"], "T3", "stack order JSON should preserve selector order")
+assert_equal("T1" in stack_summary and "T3" in stack_summary and "T2" in stack_summary, True, "stack order summary should include selected tiles")
 loop_source_inputs = ttp.TTP_Smart_Tile_Loop_Source_Experimental.INPUT_TYPES()
 assert_equal(loop_source_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "loop source should accept Smart Tile Set")
 assert_equal(loop_source_inputs["optional"]["clip"][0], "CLIP", "loop source should optionally encode tile prompts with CLIP")
@@ -1342,6 +1383,51 @@ assert_equal("paint mask" in paint_message.lower(), True, "paint-only auto tile 
 half_mask = Image.new("L", (8, 8), 128)
 half_mask_data = ttp._ttp_encode_object_mask_data([half_mask], [0], [0, 0, 8, 8])
 assemble_node = ttp.TTP_Smart_Tile_Assemble_Experimental()
+stack_assemble_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "original_size": [8, 8],
+    "tile_meta": {
+        "type": "ttp_smart_tile",
+        "original_size": [8, 8],
+        "tiles": [
+            {
+                "name": f"stack_tile_{index + 1}",
+                "core_box": [0, 0, 8, 8],
+                "sample_box": [0, 0, 8, 8],
+                "tile_canvas_size": [8, 8],
+                "tile_canvas_box": [0, 0, 8, 8],
+                "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+                "blend": 0,
+                "importance": 1.0,
+                "priority": 0.0,
+                "layer": 1 if index == 3 else 0,
+                "occlusion_priority": 80000 if index == 3 else 0,
+            }
+            for index in range(4)
+        ],
+    },
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (220, 20, 20)))[0],
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (20, 220, 20)))[0],
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (20, 20, 220)))[0],
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (220, 220, 20)))[0],
+    ],
+}
+stack_assemble_set, _stack_assemble_json, _stack_assemble_summary = stack_node.apply_stack_order(
+    stack_assemble_tile_set,
+    tile_order="T1,T3,T2",
+)
+stack_assembled, _stack_assembled_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    auto_composite_policy="safe_auto",
+    tile_set=stack_assemble_set,
+)
+stack_center = stack_assembled.array[0, 4, 4]
+assert_equal(float(stack_center[0]) > float(stack_center[2]), True, "stack order assemble should put the first listed tile on top by default")
+assert_equal(float(stack_center[0]) > float(stack_center[1]), True, "stack order assemble should keep unlisted and later listed tiles behind the first listed tile")
 soft_tile_meta = {
     "type": "ttp_smart_tile",
     "original_size": [8, 8],
