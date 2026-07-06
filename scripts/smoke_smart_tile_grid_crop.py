@@ -153,6 +153,7 @@ assert_equal("auto_detect_request" in required_inputs, True, "interactive crop s
 assert_equal("auto_prompt" in required_inputs, True, "interactive crop should expose a visual prompt")
 assert_equal("allow_object_overlap" in required_inputs, True, "interactive crop should expose object overlap control")
 assert_equal("auto_object_padding" in required_inputs, True, "interactive crop should expose object padding control")
+assert_equal("auto_mask_expand" in required_inputs, True, "interactive crop should expose auto mask expansion control")
 assert_equal("auto_max_tiles" in required_inputs, True, "interactive crop should expose auto max tiles control")
 assert_equal("auto_paint_mask" in required_inputs, True, "interactive crop should expose hidden painted mask input")
 assert_equal("vision_model" in optional_inputs, True, "interactive crop should expose a vision model input")
@@ -1302,6 +1303,37 @@ mask_array = ttp._ttp_tile_object_mask_array(masked_auto_meta[0], masked_auto_me
 assert_equal(mask_array.shape[2], 1, "decoded object mask should be a single-channel weight map")
 assert_equal(float(mask_array.max()) > 0.5, True, "decoded object mask should keep foreground weight")
 
+small_expand_mask = Image.new("L", (32, 32), 0)
+for x in range(10, 14):
+    for y in range(10, 14):
+        small_expand_mask.putpixel((x, y), 255)
+small_mask_layout = ttp._ttp_boxes_to_auto_layout(
+    [{"x": 10, "y": 10, "width": 4, "height": 4, "label": "eye", "score": 0.9}],
+    32,
+    32,
+    object_padding=4,
+    mask_expand=0,
+    max_tiles=1,
+    include_background=False,
+    masks=[small_expand_mask],
+)
+expanded_mask_layout = ttp._ttp_boxes_to_auto_layout(
+    [{"x": 10, "y": 10, "width": 4, "height": 4, "label": "eye", "score": 0.9}],
+    32,
+    32,
+    object_padding=4,
+    mask_expand=2,
+    max_tiles=1,
+    include_background=False,
+    masks=[small_expand_mask],
+)
+small_mask_tile = ttp._ttp_parse_smart_tile_layout(small_mask_layout, 32, 32)[0]
+expanded_mask_tile = ttp._ttp_parse_smart_tile_layout(expanded_mask_layout, 32, 32)[0]
+small_mask_pixels = np.count_nonzero(np.array(ttp._ttp_decode_object_mask_data(small_mask_tile["object_mask"])) > 0)
+expanded_mask_pixels = np.count_nonzero(np.array(ttp._ttp_decode_object_mask_data(expanded_mask_tile["object_mask"])) > 0)
+assert_equal(expanded_mask_pixels > small_mask_pixels, True, "auto mask expand should dilate object mask foreground pixels")
+assert_equal(expanded_mask_tile.get("object_mask_expand"), 2.0, "auto mask expand should be preserved in tile metadata")
+
 large_body_mask = Image.new("L", (900, 600), 255)
 large_body_layout = ttp._ttp_boxes_to_auto_layout(
     [{"x": 0, "y": 0, "width": 900, "height": 600, "label": "person body", "score": 0.93}],
@@ -1372,6 +1404,7 @@ paint_layout, paint_message = ttp._ttp_run_paint_mask_auto_layout(
     default_pad=8,
     default_blend=4,
     object_padding=2,
+    mask_expand=2,
     max_tiles=8,
     allow_object_overlap=True,
 )

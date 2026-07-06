@@ -463,6 +463,7 @@ def _ttp_normalize_tile_box(tile, image_width, image_height, defaults):
         "recommended_layer",
         "recommended_priority",
         "recommended_occlusion_priority",
+        "object_mask_expand",
     ):
         if key in tile:
             normalized[key] = _ttp_safe_float(tile.get(key), 0.0)
@@ -691,7 +692,20 @@ def _ttp_mask_tensor_to_pil_list(masks, image_width, image_height):
     return result
 
 
-def _ttp_encode_object_mask_data(mask_images, mask_indices, box):
+def _ttp_expand_l_mask(mask, expand_px):
+    expand_px = max(0, min(2048, int(round(float(expand_px or 0)))))
+    if expand_px <= 0:
+        return mask.convert("L")
+    expanded = mask.convert("L")
+    remaining = expand_px
+    while remaining > 0:
+        step = min(remaining, 127)
+        expanded = expanded.filter(ImageFilter.MaxFilter(step * 2 + 1))
+        remaining -= step
+    return expanded
+
+
+def _ttp_encode_object_mask_data(mask_images, mask_indices, box, mask_expand=0):
     if not mask_images or not mask_indices:
         return None
     x0, y0, x1, y1 = [int(round(value)) for value in box]
@@ -705,6 +719,9 @@ def _ttp_encode_object_mask_data(mask_images, mask_indices, box):
         if cropped.getbbox() is None:
             continue
         combined = ImageChops.lighter(combined, cropped)
+    if combined.getbbox() is None:
+        return None
+    combined = _ttp_expand_l_mask(combined, mask_expand)
     if combined.getbbox() is None:
         return None
     buffer = BytesIO()
@@ -1609,6 +1626,7 @@ def _ttp_boxes_to_auto_layout(
     default_pad=128,
     default_blend=64,
     object_padding=96,
+    mask_expand=16,
     max_tiles=16,
     include_background=True,
     allow_object_overlap=True,
@@ -1687,9 +1705,11 @@ def _ttp_boxes_to_auto_layout(
                 "recommended_occlusion_priority": 0.0,
                 "recommended_composite_mode": "context",
             })
-        object_mask = _ttp_encode_object_mask_data(mask_images, item.get("mask_indices", []), box)
+        object_mask = _ttp_encode_object_mask_data(mask_images, item.get("mask_indices", []), box, mask_expand=mask_expand)
         if object_mask is not None:
             tile["object_mask"] = object_mask
+            if int(mask_expand) > 0:
+                tile["object_mask_expand"] = int(mask_expand)
         tiles.append(tile)
 
     if len(tiles) == (1 if include_background else 0):
@@ -3023,6 +3043,7 @@ def _ttp_run_sam3_auto_layout(
     default_pad,
     default_blend,
     object_padding,
+    mask_expand,
     max_tiles,
     allow_object_overlap,
     paint_mask_payload=None,
@@ -3065,6 +3086,7 @@ def _ttp_run_sam3_auto_layout(
         default_pad=int(default_pad),
         default_blend=int(default_blend),
         object_padding=int(object_padding),
+        mask_expand=int(mask_expand),
         max_tiles=int(max_tiles),
         include_background=False,
         allow_object_overlap=bool(allow_object_overlap),
@@ -3200,6 +3222,7 @@ def _ttp_run_qwenvl3_auto_layout(
     default_pad,
     default_blend,
     object_padding,
+    mask_expand,
     max_tiles,
     allow_object_overlap,
     paint_mask_payload=None,
@@ -3237,6 +3260,7 @@ def _ttp_run_qwenvl3_auto_layout(
         default_pad=int(default_pad),
         default_blend=int(default_blend),
         object_padding=int(object_padding),
+        mask_expand=int(mask_expand),
         max_tiles=int(max_tiles),
         include_background=False,
         allow_object_overlap=bool(allow_object_overlap),
@@ -3253,6 +3277,7 @@ def _ttp_run_paint_mask_auto_layout(
     default_pad,
     default_blend,
     object_padding,
+    mask_expand,
     max_tiles,
     allow_object_overlap,
 ):
@@ -3268,6 +3293,7 @@ def _ttp_run_paint_mask_auto_layout(
         default_pad=int(default_pad),
         default_blend=int(default_blend),
         object_padding=int(object_padding),
+        mask_expand=int(mask_expand),
         max_tiles=int(max_tiles),
         include_background=False,
         allow_object_overlap=bool(allow_object_overlap),
@@ -3543,6 +3569,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
                 }),
                 "allow_object_overlap": ("BOOLEAN", {"default": True}),
                 "auto_object_padding": ("INT", {"default": 96, "min": 0, "max": 2048, "step": 8}),
+                "auto_mask_expand": ("INT", {"default": 16, "min": 0, "max": 2048, "step": 4}),
                 "auto_max_tiles": ("INT", {"default": 16, "min": 1, "max": 64, "step": 1}),
                 "auto_paint_mask": ("STRING", {"default": "", "multiline": False}),
             },
@@ -3579,6 +3606,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
             "auto_prompt": kwargs.get("auto_prompt", ""),
             "allow_object_overlap": kwargs.get("allow_object_overlap", True),
             "auto_object_padding": kwargs.get("auto_object_padding", 96),
+            "auto_mask_expand": kwargs.get("auto_mask_expand", 16),
             "auto_max_tiles": kwargs.get("auto_max_tiles", 16),
             "auto_paint_mask": hashlib.sha256(str(kwargs.get("auto_paint_mask", "") or "").encode("utf-8")).hexdigest()[:16],
             "source_image": type(kwargs.get("source_image")).__name__ if kwargs.get("source_image") is not None else None,
@@ -3613,6 +3641,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
         auto_prompt="person, face, hands, eyes, text, foreground object, important object",
         allow_object_overlap=True,
         auto_object_padding=96,
+        auto_mask_expand=16,
         auto_max_tiles=16,
         auto_paint_mask="",
         source_image=None,
@@ -3638,6 +3667,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
                         int(default_pad),
                         int(default_blend),
                         int(auto_object_padding),
+                        int(auto_mask_expand),
                         int(auto_max_tiles),
                         bool(allow_object_overlap),
                         auto_paint_mask,
@@ -3651,6 +3681,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
                         int(default_pad),
                         int(default_blend),
                         int(auto_object_padding),
+                        int(auto_mask_expand),
                         int(auto_max_tiles),
                         bool(allow_object_overlap),
                         auto_paint_mask,
@@ -3663,6 +3694,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
                         int(default_pad),
                         int(default_blend),
                         int(auto_object_padding),
+                        int(auto_mask_expand),
                         int(auto_max_tiles),
                         bool(allow_object_overlap),
                     )

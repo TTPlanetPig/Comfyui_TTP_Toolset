@@ -98,6 +98,9 @@ assert(/Merge masks/.test(source), "tile editor should expose a merge masks acti
 assert(/Merge tiles/.test(source), "tile editor should expose a merge tiles action");
 assert(/ownObjectMaskData/.test(source), "mask merging should prefer each tile's cropped mask over parent source masks");
 assert(/function addPaintMaskTiles/.test(source), "tile editor should convert painted masks into persisted tiles");
+assert(/auto_mask_expand/.test(source), "paint-created tiles should read the auto mask expansion widget");
+assert(/expandMaskImageData/.test(source), "paint-created masks should support foreground expansion");
+assert(/maskCropData\(canvas, box, maskExpand\)/.test(source), "paint-created masks should apply the requested mask expansion");
 assert(/source: "paint_mask"/.test(source), "paint-created tiles should be marked as paint mask tiles");
 assert(/object_mask:\s*\{/.test(source), "paint-created tiles should persist object masks in layout metadata");
 assert(/Clear mask/.test(source), "tile editor should expose a clear mask action");

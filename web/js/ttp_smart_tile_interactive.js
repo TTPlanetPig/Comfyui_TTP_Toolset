@@ -23,7 +23,7 @@ const MASK_OVERLAY_COLORS = [
 const TILE_METADATA_KEYS = [
     "name", "source", "label", "score", "layer", "object_id", "occlusion_priority",
     "priority", "importance", "pad", "blend", "object_mask", "object_mask_source",
-    "semantic_category", "semantic_role", "semantic_score", "recommended_scale_weight",
+    "object_mask_expand", "semantic_category", "semantic_role", "semantic_score", "recommended_scale_weight",
     "recommended_layer", "recommended_priority", "recommended_occlusion_priority", "recommended_composite_mode",
 ];
 
@@ -892,14 +892,96 @@ function paintMaskComponents(canvas, minArea = 24) {
     return components;
 }
 
-function maskCropData(canvas, box) {
+function slidingMaxHorizontal(values, width, height, radius) {
+    const output = new Uint8Array(values.length);
+    for (let y = 0; y < height; y += 1) {
+        const rowOffset = y * width;
+        const deque = [];
+        let head = 0;
+        let added = -1;
+        for (let x = 0; x < width; x += 1) {
+            const limit = Math.min(width - 1, x + radius);
+            while (added < limit) {
+                added += 1;
+                const value = values[rowOffset + added];
+                while (deque.length > head && values[rowOffset + deque[deque.length - 1]] <= value) {
+                    deque.pop();
+                }
+                deque.push(added);
+            }
+            const minX = x - radius;
+            while (deque.length > head && deque[head] < minX) {
+                head += 1;
+            }
+            output[rowOffset + x] = deque.length > head ? values[rowOffset + deque[head]] : 0;
+        }
+    }
+    return output;
+}
+
+function slidingMaxVertical(values, width, height, radius) {
+    const output = new Uint8Array(values.length);
+    for (let x = 0; x < width; x += 1) {
+        const deque = [];
+        let head = 0;
+        let added = -1;
+        for (let y = 0; y < height; y += 1) {
+            const limit = Math.min(height - 1, y + radius);
+            while (added < limit) {
+                added += 1;
+                const value = values[added * width + x];
+                while (deque.length > head && values[deque[deque.length - 1] * width + x] <= value) {
+                    deque.pop();
+                }
+                deque.push(added);
+            }
+            const minY = y - radius;
+            while (deque.length > head && deque[head] < minY) {
+                head += 1;
+            }
+            output[y * width + x] = deque.length > head ? values[deque[head] * width + x] : 0;
+        }
+    }
+    return output;
+}
+
+function expandMaskImageData(imageData, width, height, expandPx) {
+    const radius = Math.max(0, Math.min(2048, Math.round(Number(expandPx) || 0)));
+    if (radius <= 0) {
+        return imageData;
+    }
+    const source = new Uint8Array(width * height);
+    const data = imageData.data;
+    for (let index = 0; index < source.length; index += 1) {
+        const offset = index * 4;
+        source[index] = Math.max(data[offset], data[offset + 1], data[offset + 2], data[offset + 3]);
+    }
+    const horizontal = slidingMaxHorizontal(source, width, height, radius);
+    const expanded = slidingMaxVertical(horizontal, width, height, radius);
+    for (let index = 0; index < expanded.length; index += 1) {
+        const value = expanded[index];
+        const offset = index * 4;
+        data[offset] = value;
+        data[offset + 1] = value;
+        data[offset + 2] = value;
+        data[offset + 3] = 255;
+    }
+    return imageData;
+}
+
+function maskCropData(canvas, box, expandPx = 0) {
     const width = Math.max(1, Math.round(box.x1 - box.x0));
     const height = Math.max(1, Math.round(box.y1 - box.y0));
     const crop = document.createElement("canvas");
     crop.width = width;
     crop.height = height;
-    const context = crop.getContext("2d");
+    const context = crop.getContext("2d", { willReadFrequently: true });
     context.drawImage(canvas, box.x0, box.y0, width, height, 0, 0, width, height);
+    const radius = Math.max(0, Math.round(Number(expandPx) || 0));
+    if (radius > 0) {
+        const imageData = context.getImageData(0, 0, width, height);
+        context.putImageData(expandMaskImageData(imageData, width, height, radius), 0, 0);
+    }
     return crop.toDataURL("image/png").split(",", 2)[1];
 }
 
@@ -916,6 +998,7 @@ function addPaintMaskTiles(node, tiles, selectedIndex, replaceExisting = false) 
         return false;
     }
     const padding = Math.max(0, Math.round(Number(widgetByName(node, "auto_object_padding")?.value ?? 96)));
+    const maskExpand = Math.max(0, Math.round(Number(widgetByName(node, "auto_mask_expand")?.value ?? 16)));
     const defaults = layoutDefaults(node);
     const nextTiles = replaceExisting ? [] : [...tiles];
     let added = 0;
@@ -944,12 +1027,13 @@ function addPaintMaskTiles(node, tiles, selectedIndex, replaceExisting = false) 
             importance: 1.0,
             layer: 5,
             occlusion_priority: 3200 + nextTiles.length,
+            object_mask_expand: maskExpand,
             object_mask: {
                 format: "png_base64",
                 box: [Math.round(box.x0), Math.round(box.y0), Math.round(width), Math.round(height)],
                 width: Math.round(width),
                 height: Math.round(height),
-                data: maskCropData(canvas, box),
+                data: maskCropData(canvas, box, maskExpand),
             },
         }));
         added += 1;
