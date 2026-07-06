@@ -191,6 +191,16 @@ function sourceObjectMaskData(tile) {
     return null;
 }
 
+function ownObjectMaskData(tile) {
+    if (tile?.object_mask?.format === "png_base64" && tile.object_mask?.data) {
+        return tile.object_mask;
+    }
+    if (tile?.object_mask_source?.format === "png_base64" && tile.object_mask_source?.data) {
+        return tile.object_mask_source;
+    }
+    return null;
+}
+
 function loadObjectMaskImage(maskData) {
     return new Promise((resolve, reject) => {
         if (!maskData || maskData.format !== "png_base64" || !maskData.data) {
@@ -460,6 +470,157 @@ async function refreshInheritedMasks(node, tiles, mode) {
     return { tiles: result, refreshed, skipped, emptied, unchanged };
 }
 
+async function mergedObjectMaskForTiles(node, tiles, selectedIndexes) {
+    const entries = [];
+    for (const index of selectedIndexes) {
+        const maskData = ownObjectMaskData(tiles[index]);
+        const maskBox = objectMaskPixelBox(maskData);
+        if (!maskData?.data || !maskBox) {
+            continue;
+        }
+        const maskImage = await loadObjectMaskImage(maskData);
+        if (!maskImage) {
+            continue;
+        }
+        entries.push({ maskImage, maskBox });
+    }
+    if (!entries.length) {
+        return null;
+    }
+
+    const x0 = Math.min(...entries.map((entry) => entry.maskBox.x0));
+    const y0 = Math.min(...entries.map((entry) => entry.maskBox.y0));
+    const x1 = Math.max(...entries.map((entry) => entry.maskBox.x1));
+    const y1 = Math.max(...entries.map((entry) => entry.maskBox.y1));
+    const width = Math.max(1, x1 - x0);
+    const height = Math.max(1, y1 - y0);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) {
+        return null;
+    }
+    context.clearRect(0, 0, width, height);
+    context.globalCompositeOperation = "lighter";
+    for (const entry of entries) {
+        context.drawImage(
+            entry.maskImage,
+            entry.maskBox.x0 - x0,
+            entry.maskBox.y0 - y0,
+            entry.maskBox.width,
+            entry.maskBox.height
+        );
+    }
+    context.globalCompositeOperation = "source-over";
+    if (!maskCanvasHasForeground(canvas)) {
+        return null;
+    }
+    const maskData = {
+        format: "png_base64",
+        box: [Math.round(x0), Math.round(y0), Math.round(width), Math.round(height)],
+        width: Math.round(width),
+        height: Math.round(height),
+        data: canvas.toDataURL("image/png").split(",", 2)[1],
+    };
+    return {
+        maskData,
+        maskBox: { x0, y0, x1, y1, width, height },
+        maskImage: canvas,
+        count: entries.length,
+    };
+}
+
+async function mergeSelectedMasks(node, tiles, selectedIndexes, selectedIndex) {
+    if (selectedIndexes.length < 2) {
+        node.ttpSmartTileStatus = "Select at least two tiles.";
+        return false;
+    }
+    const merged = await mergedObjectMaskForTiles(node, tiles, selectedIndexes);
+    if (!merged) {
+        node.ttpSmartTileStatus = "Selected tiles have no masks to merge.";
+        return false;
+    }
+    const selectedSet = new Set(selectedIndexes);
+    let updated = 0;
+    const nextTiles = tiles.map((tile, index) => {
+        if (!selectedSet.has(index)) {
+            return tile;
+        }
+        const nextTile = { ...tile };
+        const cropped = cropObjectMaskForTile(node, merged.maskImage, merged.maskBox, nextTile);
+        if (cropped) {
+            nextTile.object_mask = cropped;
+            nextTile.object_mask_source = merged.maskData;
+            updated += 1;
+        } else {
+            delete nextTile.object_mask;
+            delete nextTile.object_mask_source;
+        }
+        return normalizeTile(node, nextTile);
+    });
+    if (!updated) {
+        node.ttpSmartTileStatus = "Merged mask does not overlap selected tiles.";
+        return false;
+    }
+    writeLayout(node, nextTiles, selectedIndex, selectedIndexes);
+    node.ttpSmartTileStatus = `Merged ${merged.count} mask(s) across ${updated} tile(s).`;
+    return true;
+}
+
+async function mergeSelectedTiles(node, tiles, selectedIndexes, selectedIndex) {
+    if (selectedIndexes.length < 2) {
+        node.ttpSmartTileStatus = "Select at least two tiles.";
+        return false;
+    }
+    const selectedSet = new Set(selectedIndexes);
+    const selectedTiles = selectedIndexes.map((index) => tiles[index]).filter(Boolean);
+    if (selectedTiles.length < 2) {
+        return false;
+    }
+    const primaryIndex = selectedSet.has(selectedIndex) ? selectedIndex : selectedIndexes[0];
+    const primaryTile = tiles[primaryIndex] ?? selectedTiles[0];
+    const x0 = Math.min(...selectedTiles.map((tile) => Number(tile.x0)));
+    const y0 = Math.min(...selectedTiles.map((tile) => Number(tile.y0)));
+    const x1 = Math.max(...selectedTiles.map((tile) => Number(tile.x1)));
+    const y1 = Math.max(...selectedTiles.map((tile) => Number(tile.y1)));
+    const selectorText = selectedIndexes.map((index) => `T${index + 1}`).join("+");
+    const mergedTile = normalizeTile(node, {
+        ...primaryTile,
+        x0,
+        y0,
+        x1,
+        y1,
+        name: `merged_${selectorText.toLowerCase()}`,
+        source: "manual_merge",
+        label: `merged ${selectorText}`,
+    });
+
+    const mergedMask = await mergedObjectMaskForTiles(node, tiles, selectedIndexes);
+    if (mergedMask) {
+        const cropped = cropObjectMaskForTile(node, mergedMask.maskImage, mergedMask.maskBox, mergedTile);
+        if (cropped) {
+            mergedTile.object_mask = cropped;
+            mergedTile.object_mask_source = mergedMask.maskData;
+        } else {
+            delete mergedTile.object_mask;
+            delete mergedTile.object_mask_source;
+        }
+    } else {
+        delete mergedTile.object_mask;
+        delete mergedTile.object_mask_source;
+    }
+
+    const insertIndex = Math.min(...selectedIndexes);
+    const remaining = tiles.filter((_tile, index) => !selectedSet.has(index));
+    remaining.splice(insertIndex, 0, mergedTile);
+    writeLayout(node, remaining, insertIndex, [insertIndex]);
+    node.ttpSmartTileStatus = mergedMask
+        ? `Merged ${selectedIndexes.length} tile(s) with ${mergedMask.count} mask(s).`
+        : `Merged ${selectedIndexes.length} tile(s).`;
+    return true;
+}
+
 function sourceStorageKey(node) {
     const size = imageSourceSize(node);
     const sizeKey = size ? `${Math.round(size.width)}x${Math.round(size.height)}` : "unknown";
@@ -712,7 +873,51 @@ function addPaintMaskTiles(node, tiles, selectedIndex, replaceExisting = false) 
     return true;
 }
 
-function writeLayout(node, tiles, selectedIndex = 0) {
+function selectedTileIndexes(node, count, fallbackIndex = 0) {
+    const fallback = Math.max(0, Math.min(Math.max(0, count - 1), Number(fallbackIndex ?? 0)));
+    const raw = Array.isArray(node.ttpSmartTileSelectedIndexes)
+        ? node.ttpSmartTileSelectedIndexes
+        : [node.ttpSmartTileSelectedIndex ?? fallback];
+    const result = [];
+    const seen = new Set();
+    for (const value of raw) {
+        const index = Math.round(Number(value));
+        if (Number.isFinite(index) && index >= 0 && index < count && !seen.has(index)) {
+            result.push(index);
+            seen.add(index);
+        }
+    }
+    if (!result.length && count > 0) {
+        result.push(fallback);
+    }
+    return result.sort((a, b) => a - b);
+}
+
+function setTileSelection(node, index, count, event = null) {
+    const safeIndex = Math.max(0, Math.min(Math.max(0, count - 1), Math.round(Number(index) || 0)));
+    const multi = boolEventModifier(event);
+    if (!multi) {
+        node.ttpSmartTileSelectedIndex = safeIndex;
+        node.ttpSmartTileSelectedIndexes = [safeIndex];
+        return;
+    }
+    const current = selectedTileIndexes(node, count, safeIndex);
+    const selected = new Set(current);
+    if (selected.has(safeIndex) && selected.size > 1) {
+        selected.delete(safeIndex);
+    } else {
+        selected.add(safeIndex);
+    }
+    const next = [...selected].sort((a, b) => a - b);
+    node.ttpSmartTileSelectedIndexes = next;
+    node.ttpSmartTileSelectedIndex = safeIndex;
+}
+
+function boolEventModifier(event) {
+    return Boolean(event?.shiftKey) || Boolean(event?.metaKey) || Boolean(event?.ctrlKey);
+}
+
+function writeLayout(node, tiles, selectedIndex = 0, selectedIndexes = null) {
     const normalizedTiles = (Array.isArray(tiles) && tiles.length ? tiles : defaultTiles(node))
         .slice(0, MAX_TILES)
         .map((tile, index) => ({
@@ -734,6 +939,9 @@ function writeLayout(node, tiles, selectedIndex = 0) {
     }
     node.ttpSmartTileLayout = layout;
     node.ttpSmartTileSelectedIndex = Math.max(0, Math.min(normalizedTiles.length - 1, Number(selectedIndex ?? 0)));
+    node.ttpSmartTileSelectedIndexes = selectedIndexes === null
+        ? [node.ttpSmartTileSelectedIndex]
+        : selectedTileIndexes({ ttpSmartTileSelectedIndexes: selectedIndexes }, normalizedTiles.length, node.ttpSmartTileSelectedIndex);
     storeLayout(node, normalizedTiles);
 }
 
@@ -1230,7 +1438,9 @@ function renderEditor(node) {
     const currentTiles = node.ttpSmartTileLayout?.tiles ?? parseLayout(node);
     const tiles = currentTiles.map((tile) => normalizeTile(node, tile));
     const selectedIndex = Math.max(0, Math.min(tiles.length - 1, Number(node.ttpSmartTileSelectedIndex ?? 0)));
-    writeLayout(node, tiles, selectedIndex);
+    const selectedIndexes = selectedTileIndexes(node, tiles.length, selectedIndex);
+    const selectedSet = new Set(selectedIndexes);
+    writeLayout(node, tiles, selectedIndex, selectedIndexes);
 
     const sourceSize = imageSourceSize(node);
     const selectedRect = tilePixelRect(node, tiles[selectedIndex]);
@@ -1474,7 +1684,10 @@ function renderEditor(node) {
         y1: nearestSnap(tile.y1, "y", skipIndex),
     });
 
-    const renderOrder = tiles.map((_tile, index) => index).filter((index) => index !== selectedIndex);
+    const renderOrder = tiles
+        .map((_tile, index) => index)
+        .filter((index) => !selectedSet.has(index));
+    renderOrder.push(...selectedIndexes.filter((index) => index !== selectedIndex));
     renderOrder.push(selectedIndex);
     const regionElements = new Map();
 
@@ -1486,7 +1699,12 @@ function renderEditor(node) {
         const index = Math.max(0, Math.min(tiles.length - 1, selected));
         const dragMode = resizeHit(tiles[index], point) ? "resize" : mode;
         const targetRegion = regionElements.get(index) ?? region;
-        node.ttpSmartTileSelectedIndex = index;
+        if (boolEventModifier(event) && dragMode !== "resize") {
+            setTileSelection(node, index, tiles.length, event);
+            renderEditor(node);
+            return;
+        }
+        setTileSelection(node, index, tiles.length);
         const startPoint = pointFromEvent(event);
         const startClientX = event.clientX;
         const startClientY = event.clientY;
@@ -1549,10 +1767,11 @@ function renderEditor(node) {
 
     for (const index of renderOrder) {
         const tile = tiles[index];
-        const selected = index === selectedIndex;
+        const selected = selectedSet.has(index);
+        const primarySelected = index === selectedIndex;
         const region = document.createElement("div");
         region.textContent = String(index + 1);
-        region.title = `Tile ${index + 1}`;
+        region.title = `Tile ${index + 1}${selected && !primarySelected ? " selected" : ""}`;
         region.style.cssText = [
             "position:absolute",
             "box-sizing:border-box",
@@ -1563,13 +1782,13 @@ function renderEditor(node) {
             `top:${tile.y0 * 100}%`,
             `width:${Math.max(0.1, (tile.x1 - tile.x0) * 100)}%`,
             `height:${Math.max(0.1, (tile.y1 - tile.y0) * 100)}%`,
-            "border:" + (selected ? "2px solid #f8fafc" : "1px solid rgba(226,232,240,.55)"),
-            "background:" + (selected ? "rgba(14,165,233,.28)" : "rgba(15,23,42,.20)"),
+            "border:" + (primarySelected ? "2px solid #f8fafc" : selected ? "2px solid #38bdf8" : "1px solid rgba(226,232,240,.55)"),
+            "background:" + (primarySelected ? "rgba(14,165,233,.28)" : selected ? "rgba(14,165,233,.18)" : "rgba(15,23,42,.20)"),
             "color:#f8fafc",
             "font-weight:800",
             "letter-spacing:0",
-            "box-shadow:" + (selected ? "0 0 0 1px rgba(15,23,42,.85),0 0 16px rgba(14,165,233,.55)" : "none"),
-            "z-index:" + (selected ? "100" : String(10 + index)),
+            "box-shadow:" + (primarySelected ? "0 0 0 1px rgba(15,23,42,.85),0 0 16px rgba(14,165,233,.55)" : selected ? "0 0 0 1px rgba(15,23,42,.65)" : "none"),
+            "z-index:" + (primarySelected ? "100" : selected ? "90" : String(10 + index)),
             "cursor:move",
             "user-select:none",
             "pointer-events:" + (paintMode === "off" ? "auto" : "none"),
@@ -1603,7 +1822,7 @@ function renderEditor(node) {
         const point = pointFromEvent(event);
         const hits = renderOrder.filter((index) => tileContainsPoint(tiles[index], point));
         if (hits.length || tiles.length >= MAX_TILES) {
-            node.ttpSmartTileSelectedIndex = hits.pop() ?? selectedIndex;
+            setTileSelection(node, hits.pop() ?? selectedIndex, tiles.length, event);
             renderEditor(node);
             return;
         }
@@ -1845,6 +2064,13 @@ function renderEditor(node) {
             writeLayout(node, refreshed.tiles, Math.min(selectedIndex, refreshed.tiles.length - 1));
             renderEditor(node);
         }, !tiles.some((tile) => tile?.object_mask_source?.data)),
+        createButton("Merge masks", async () => {
+            await mergeSelectedMasks(node, tiles, selectedIndexes, selectedIndex).catch((error) => {
+                node.ttpSmartTileStatus = error?.message || "Merge masks failed.";
+                return false;
+            });
+            renderEditor(node);
+        }, selectedIndexes.length < 2),
         createButton("Clear mask", () => {
             clearPaintMask(node);
             node.ttpSmartTilePaintMode = "off";
@@ -1854,13 +2080,13 @@ function renderEditor(node) {
     controls.append(paintControls);
 
     for (const [index] of tiles.entries()) {
-        const button = createButton(`T${index + 1}`, () => {
-            node.ttpSmartTileSelectedIndex = index;
+        const button = createButton(`T${index + 1}`, (event) => {
+            setTileSelection(node, index, tiles.length, event);
             renderEditor(node);
         });
-        if (index === selectedIndex) {
-            button.style.background = "#38bdf8";
-            button.style.borderColor = "#7dd3fc";
+        if (selectedSet.has(index)) {
+            button.style.background = index === selectedIndex ? "#38bdf8" : "#bae6fd";
+            button.style.borderColor = index === selectedIndex ? "#7dd3fc" : "#38bdf8";
             button.style.color = "#082f49";
         }
         actions.append(button);
@@ -1896,6 +2122,13 @@ function renderEditor(node) {
             writeLayout(node, tiles.filter((_tile, index) => index !== selectedIndex), Math.max(0, selectedIndex - 1));
             renderEditor(node);
         }, tiles.length <= 1),
+        createButton("Merge tiles", async () => {
+            await mergeSelectedTiles(node, tiles, selectedIndexes, selectedIndex).catch((error) => {
+                node.ttpSmartTileStatus = error?.message || "Merge tiles failed.";
+                return false;
+            });
+            renderEditor(node);
+        }, selectedIndexes.length < 2),
         createButton("Fill gaps", () => {
             const filled = fillTileGaps(node, tiles);
             node.ttpSmartTileStatus = filled.coverage.gaps.length
@@ -1914,7 +2147,9 @@ function renderEditor(node) {
     const status = document.createElement("div");
     status.style.cssText = "display:flex;gap:10px;flex-wrap:wrap;opacity:.76;";
     const selectedLabel = selectedRect
-        ? `T${selectedIndex + 1}: x${selectedRect.x0}, y${selectedRect.y0}, ${selectedRect.width}x${selectedRect.height}`
+        ? selectedIndexes.length > 1
+            ? `${selectedIndexes.map((index) => `T${index + 1}`).join(",")} selected / active T${selectedIndex + 1}`
+            : `T${selectedIndex + 1}: x${selectedRect.x0}, y${selectedRect.y0}, ${selectedRect.width}x${selectedRect.height}`
         : `T${selectedIndex + 1}`;
     const coverageLabel = coverage.gaps.length
         ? `${coverage.gaps.length} gap(s), ${(coverage.uncoveredArea * 100).toFixed(2)}%`

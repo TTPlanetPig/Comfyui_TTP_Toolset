@@ -79,6 +79,15 @@ assert(/Mask to Tile/.test(source), "tile editor should expose a button that com
 assert(/Mask Replace/.test(source), "tile editor should expose a button that replaces the layout with painted mask tiles");
 assert(/Refresh masks/.test(source), "tile editor should expose a refresh masks action");
 assert(/refreshInheritedMasks\(node, tiles, gridMaskMode\(node\)\)/.test(source), "Refresh masks should use the current grid mask mode");
+assert(/function selectedTileIndexes/.test(source), "tile editor should track multi-selected tiles");
+assert(/function setTileSelection/.test(source), "tile editor should support modifier-click multi-selection");
+assert(/boolEventModifier\(event\)/.test(beginDrag), "modifier-clicking an existing tile should toggle multi-selection");
+assert(/async function mergedObjectMaskForTiles/.test(source), "tile editor should union selected tile masks");
+assert(/async function mergeSelectedMasks/.test(source), "tile editor should expose selected mask merging logic");
+assert(/async function mergeSelectedTiles/.test(source), "tile editor should expose selected tile merging logic");
+assert(/Merge masks/.test(source), "tile editor should expose a merge masks action");
+assert(/Merge tiles/.test(source), "tile editor should expose a merge tiles action");
+assert(/ownObjectMaskData/.test(source), "mask merging should prefer each tile's cropped mask over parent source masks");
 assert(/function addPaintMaskTiles/.test(source), "tile editor should convert painted masks into persisted tiles");
 assert(/source: "paint_mask"/.test(source), "paint-created tiles should be marked as paint mask tiles");
 assert(/object_mask:\s*\{/.test(source), "paint-created tiles should persist object masks in layout metadata");
