@@ -40,6 +40,7 @@ Useful editor actions:
 
 - `Replace grid`: replace the whole layout with an even grid.
 - `Grid in T#`: subdivide the selected tile without rebuilding the whole layout.
+- `Show masks` / `Hide masks`: toggle a colored overlay for tile object masks in the editor.
 - `Mask to Tile`: turn painted regions into object tiles.
 - `Merge masks`: Shift/Cmd/Ctrl-select multiple tiles, then union their cropped object masks back onto the selected tiles.
 - `Merge tiles`: Shift/Cmd/Ctrl-select multiple tiles, then replace them with one larger tile; existing masks are unioned into the merged tile when available.

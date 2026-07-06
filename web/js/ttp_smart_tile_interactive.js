@@ -10,6 +10,16 @@ const snapGuideThresholdPx = 10;
 const largeContextAreaRatio = 0.9;
 const STORAGE_PREFIX = "ttp_smart_tile_interactive_layout";
 const GRID_MASK_MODES = ["off", "crop_mask", "crop_mask_skip_empty"];
+const MASK_OVERLAY_COLORS = [
+    [248, 113, 113],
+    [52, 211, 153],
+    [96, 165, 250],
+    [251, 191, 36],
+    [216, 180, 254],
+    [45, 212, 191],
+    [251, 113, 133],
+    [163, 230, 53],
+];
 const TILE_METADATA_KEYS = [
     "name", "source", "label", "score", "layer", "object_id", "occlusion_priority",
     "priority", "importance", "pad", "blend", "object_mask", "object_mask_source",
@@ -212,6 +222,93 @@ function loadObjectMaskImage(maskData) {
         image.onerror = () => reject(new Error("Unable to decode selected tile mask."));
         image.src = `data:image/png;base64,${maskData.data}`;
     });
+}
+
+function maskOverlayEnabled(node) {
+    return Boolean(node?.ttpSmartTileShowMasks);
+}
+
+function tintedMaskCanvas(maskImage, color) {
+    const width = Math.max(1, Math.round(maskImage?.naturalWidth || maskImage?.width || 1));
+    const height = Math.max(1, Math.round(maskImage?.naturalHeight || maskImage?.height || 1));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) {
+        return null;
+    }
+    context.clearRect(0, 0, width, height);
+    context.drawImage(maskImage, 0, 0, width, height);
+    const imageData = context.getImageData(0, 0, width, height);
+    const data = imageData.data;
+    let maxRgb = 0;
+    let minAlpha = 255;
+    let maxAlpha = 0;
+    for (let index = 0; index < data.length; index += 4) {
+        maxRgb = Math.max(maxRgb, data[index], data[index + 1], data[index + 2]);
+        minAlpha = Math.min(minAlpha, data[index + 3]);
+        maxAlpha = Math.max(maxAlpha, data[index + 3]);
+    }
+    const useAlphaOnly = maxRgb === 0 && maxAlpha > minAlpha;
+    let hasForeground = false;
+    for (let index = 0; index < data.length; index += 4) {
+        const maskValue = useAlphaOnly
+            ? data[index + 3]
+            : Math.max(data[index], data[index + 1], data[index + 2]);
+        if (maskValue > 0) {
+            hasForeground = true;
+        }
+        data[index] = color[0];
+        data[index + 1] = color[1];
+        data[index + 2] = color[2];
+        data[index + 3] = Math.round(maskValue * 0.52);
+    }
+    if (!hasForeground) {
+        return null;
+    }
+    context.putImageData(imageData, 0, 0);
+    return canvas;
+}
+
+async function renderMaskOverlay(node, canvas, tiles) {
+    const sourceSize = imageSourceSize(node);
+    const context = canvas?.getContext?.("2d", { willReadFrequently: true });
+    if (!sourceSize || !context) {
+        return;
+    }
+    const token = Symbol("mask-overlay");
+    node.ttpSmartTileMaskOverlayToken = token;
+    canvas.width = sourceSize.width;
+    canvas.height = sourceSize.height;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+
+    for (const [index, tile] of tiles.entries()) {
+        if (node.ttpSmartTileMaskOverlayToken !== token || !canvas.isConnected) {
+            return;
+        }
+        const maskData = ownObjectMaskData(tile);
+        const maskBox = objectMaskPixelBox(maskData);
+        if (!maskData?.data || !maskBox) {
+            continue;
+        }
+        const maskImage = await loadObjectMaskImage(maskData);
+        if (node.ttpSmartTileMaskOverlayToken !== token || !canvas.isConnected || !maskImage) {
+            return;
+        }
+        const color = MASK_OVERLAY_COLORS[index % MASK_OVERLAY_COLORS.length];
+        const tintedMask = tintedMaskCanvas(maskImage, color);
+        if (!tintedMask) {
+            continue;
+        }
+        context.drawImage(
+            tintedMask,
+            maskBox.x0,
+            maskBox.y0,
+            maskBox.width,
+            maskBox.height
+        );
+    }
 }
 
 function maskCanvasHasForeground(canvas) {
@@ -1440,6 +1537,10 @@ function renderEditor(node) {
     const selectedIndex = Math.max(0, Math.min(tiles.length - 1, Number(node.ttpSmartTileSelectedIndex ?? 0)));
     const selectedIndexes = selectedTileIndexes(node, tiles.length, selectedIndex);
     const selectedSet = new Set(selectedIndexes);
+    const hasTileMasks = tiles.some((tile) => Boolean(ownObjectMaskData(tile)?.data));
+    if (!hasTileMasks && maskOverlayEnabled(node)) {
+        node.ttpSmartTileShowMasks = false;
+    }
     writeLayout(node, tiles, selectedIndex, selectedIndexes);
 
     const sourceSize = imageSourceSize(node);
@@ -1501,6 +1602,26 @@ function renderEditor(node) {
             "pointer-events:none",
         ].join(";");
         stage.append(empty);
+    }
+
+    if (sourceSize && hasTileMasks && maskOverlayEnabled(node)) {
+        const maskOverlay = document.createElement("canvas");
+        maskOverlay.title = "Tile object masks";
+        maskOverlay.style.cssText = [
+            "position:absolute",
+            "inset:0",
+            "width:100%",
+            "height:100%",
+            "pointer-events:none",
+            "z-index:8",
+        ].join(";");
+        stage.append(maskOverlay);
+        renderMaskOverlay(node, maskOverlay, tiles).catch((error) => {
+            node.ttpSmartTileStatus = error?.message || "Mask overlay failed.";
+            scheduleCanvas(node);
+        });
+    } else {
+        node.ttpSmartTileMaskOverlayToken = null;
     }
 
     const paintCanvas = ensurePaintMaskCanvas(node);
@@ -2013,8 +2134,19 @@ function renderEditor(node) {
         eraseButton.style.borderColor = "#e2e8f0";
         eraseButton.style.color = "#0f172a";
     }
+    const maskOverlayButton = createButton(maskOverlayEnabled(node) ? "Hide masks" : "Show masks", () => {
+        node.ttpSmartTileShowMasks = !maskOverlayEnabled(node);
+        renderEditor(node);
+    }, !hasTileMasks);
+    maskOverlayButton.title = "Toggle colored object-mask overlay";
+    if (maskOverlayEnabled(node)) {
+        maskOverlayButton.style.background = "#a7f3d0";
+        maskOverlayButton.style.borderColor = "#34d399";
+        maskOverlayButton.style.color = "#064e3b";
+    }
     paintControls.append(
         paintLabel,
+        maskOverlayButton,
         paintButton,
         eraseButton,
         document.createTextNode("px"),

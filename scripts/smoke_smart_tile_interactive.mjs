@@ -73,6 +73,14 @@ assert(/crop_mask_skip_empty/.test(source), "Grid in should allow skipping empty
 assert(/createButton\(`Grid in T\$\{selectedIndex \+ 1\}`, async \(\) =>/.test(source), "Grid in should run asynchronously for mask cropping");
 assert(/ensurePaintMaskCanvas/.test(source), "tile editor should create a paint mask canvas");
 assert(/auto_paint_mask/.test(source), "tile editor should sync painted masks into the hidden backend input");
+assert(/MASK_OVERLAY_COLORS/.test(source), "tile editor should define distinct colors for object-mask overlays");
+assert(/function maskOverlayEnabled/.test(source), "tile editor should expose a mask overlay toggle state");
+assert(/async function renderMaskOverlay/.test(source), "tile editor should render object masks as a colored overlay");
+assert(/tintedMaskCanvas/.test(source), "tile editor should tint mask pixels before showing overlays");
+assert(/Show masks/.test(source), "tile editor should expose a show masks toggle");
+assert(/Hide masks/.test(source), "tile editor should expose a hide masks toggle");
+assert(/ttpSmartTileShowMasks/.test(source), "mask overlay visibility should be stored on the editor node instance");
+assert(/renderMaskOverlay\(node, maskOverlay, tiles\)/.test(source), "renderEditor should draw the colored mask overlay when enabled");
 assert(/Brush/.test(source), "tile editor should expose a paint brush action");
 assert(/Erase/.test(source), "tile editor should expose an erase action");
 assert(/Mask to Tile/.test(source), "tile editor should expose a button that commits painted masks into layout tiles");
