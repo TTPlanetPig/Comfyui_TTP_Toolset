@@ -728,7 +728,26 @@ def _ttp_decode_object_mask_data(mask_data):
         return None
 
 
-def _ttp_tile_object_mask_array(tile, out_width, out_height, mask_blend_mode="mask_feather", feather=0):
+def _ttp_harden_stitch_mask_array(mask_array, feather=0, threshold=0.05):
+    mask_2d = np.clip(np.asarray(mask_array, dtype=np.float32), 0.0, 1.0)
+    hard = (mask_2d > float(threshold)).astype(np.float32)
+    if float(hard.max()) <= 0.0:
+        return hard[:, :, None]
+
+    feather = max(0, int(round(float(feather))))
+    if feather <= 0:
+        return hard[:, :, None]
+
+    hard_pil = Image.fromarray((hard * 255.0).astype(np.uint8), mode="L")
+    expand_px = max(1, min(64, int(round(float(feather) * 0.25))))
+    hard_pil = hard_pil.filter(ImageFilter.MaxFilter(expand_px * 2 + 1))
+    blur_radius = max(0.75, min(64.0, float(feather) * 0.25))
+    softened = hard_pil.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    softened_array = np.array(softened).astype(np.float32) / 255.0
+    return np.maximum(hard, softened_array)[:, :, None]
+
+
+def _ttp_tile_object_mask_array(tile, out_width, out_height, mask_blend_mode="mask_feather", feather=0, hard_stitch=False):
     if str(mask_blend_mode) == "off":
         return None
     mask_data = tile.get("object_mask_source")
@@ -757,6 +776,10 @@ def _ttp_tile_object_mask_array(tile, out_width, out_height, mask_blend_mode="ma
         (paste_x + clip_left, paste_y + clip_top),
     )
     source_mask = source_mask.resize((out_width, out_height), Image.Resampling.BILINEAR)
+    if hard_stitch:
+        source_array = np.array(source_mask).astype(np.float32) / 255.0
+        stitch_feather = feather if str(mask_blend_mode) in ("auto", "mask_feather") else 0
+        return _ttp_harden_stitch_mask_array(source_array, stitch_feather)
     if str(mask_blend_mode) in ("auto", "mask_feather"):
         min_radius = min(12.0, max(0.75, min(int(out_width), int(out_height)) * 0.006))
         radius = max(min_radius, float(feather) * 0.35)
@@ -5380,7 +5403,14 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 1.0,
             )
             mask_mode = "mask_feather" if replace_tile_mode else str(mask_blend_mode)
-            object_mask = _ttp_tile_object_mask_array(tile, out_w, out_h, mask_mode, blend)
+            object_mask = _ttp_tile_object_mask_array(
+                tile,
+                out_w,
+                out_h,
+                mask_mode,
+                blend,
+                hard_stitch=replace_tile_mode and tile_replace_shape != "tile_box_first",
+            )
             if replace_tile_mode:
                 if tile_replace_shape == "tile_box_first":
                     mask = _ttp_rect_feather_mask(out_w, out_h, blend)

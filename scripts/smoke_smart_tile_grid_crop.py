@@ -1724,6 +1724,52 @@ replace_box_center = replace_boxed.array[0, 8, 8]
 assert_equal(float(replace_box_corner[2]) > float(replace_box_corner[0]), True, "replace_tile tile_box_first should paste the full tile rectangle even when an object mask exists")
 assert_equal(float(replace_box_center[2]) > float(replace_box_center[0]), True, "replace_tile tile_box_first should still replace the object center")
 
+replace_soft_mask_full = Image.new("L", (16, 16), 0)
+ImageDraw.Draw(replace_soft_mask_full).rectangle((4, 4, 11, 11), fill=128)
+replace_soft_mask_data = ttp._ttp_encode_object_mask_data([replace_soft_mask_full], [0], [4, 4, 12, 12])
+replace_soft_mask_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "original_size": [16, 16],
+    "tile_meta": {
+        "type": "ttp_smart_tile",
+        "original_size": [16, 16],
+        "tiles": [
+            {
+                "name": "soft_masked_edit",
+                "label": "paint mask edit",
+                "core_box": [4, 4, 8, 8],
+                "sample_box": [4, 4, 8, 8],
+                "tile_canvas_size": [8, 8],
+                "tile_canvas_box": [0, 0, 8, 8],
+                "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+                "blend": 0,
+                "importance": 1.0,
+                "priority": 0.0,
+                "layer": 0,
+                "occlusion_priority": 0,
+                "object_mask": replace_soft_mask_data,
+                "composite_mode": "replace_tile",
+            },
+        ],
+    },
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (20, 20, 220)))[0],
+    ],
+}
+replace_soft_masked, _replace_soft_masked_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="source_image",
+    mask_blend_mode="off",
+    auto_composite_policy="replace_tile",
+    source_image=replace_source,
+    tile_set=replace_soft_mask_tile_set,
+)
+replace_soft_center = replace_soft_masked.array[0, 8, 8]
+assert_equal(float(replace_soft_center[2]) > 0.8, True, "replace_tile mask_first should harden soft mask interiors instead of making the whole edit translucent")
+assert_equal(float(replace_soft_center[0]) < 0.2, True, "replace_tile mask_first should remove source pixels from soft mask interiors")
+
 subdivided_mask_full = Image.new("L", (64, 64), 0)
 ImageDraw.Draw(subdivided_mask_full).rectangle((24, 24, 39, 39), fill=255)
 subdivided_mask_data = ttp._ttp_encode_object_mask_data([subdivided_mask_full], [0], [24, 24, 40, 40])
