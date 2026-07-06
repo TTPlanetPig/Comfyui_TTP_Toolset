@@ -645,7 +645,7 @@ function maskCropData(canvas, box) {
     return crop.toDataURL("image/png").split(",", 2)[1];
 }
 
-function addPaintMaskTiles(node, tiles, selectedIndex) {
+function addPaintMaskTiles(node, tiles, selectedIndex, replaceExisting = false) {
     const canvas = ensurePaintMaskCanvas(node);
     const size = imageSourceSize(node);
     if (!canvas || !size || !paintMaskHasPixels(canvas)) {
@@ -659,7 +659,7 @@ function addPaintMaskTiles(node, tiles, selectedIndex) {
     }
     const padding = Math.max(0, Math.round(Number(widgetByName(node, "auto_object_padding")?.value ?? 96)));
     const defaults = layoutDefaults(node);
-    const nextTiles = [...tiles];
+    const nextTiles = replaceExisting ? [] : [...tiles];
     let added = 0;
     for (const component of components) {
         if (nextTiles.length >= MAX_TILES) {
@@ -700,10 +700,15 @@ function addPaintMaskTiles(node, tiles, selectedIndex) {
         node.ttpSmartTileStatus = `Mask has ${components.length} region(s), but max ${MAX_TILES} tiles is reached.`;
         return false;
     }
-    writeLayout(node, nextTiles, Math.min(nextTiles.length - 1, Math.max(0, selectedIndex + added)));
+    const nextSelected = replaceExisting
+        ? Math.max(0, added - 1)
+        : Math.min(nextTiles.length - 1, Math.max(0, selectedIndex + added));
+    writeLayout(node, nextTiles, nextSelected);
     clearPaintMask(node);
     node.ttpSmartTilePaintMode = "off";
-    node.ttpSmartTileStatus = `Mask to Tile added ${added} tile(s).`;
+    node.ttpSmartTileStatus = replaceExisting
+        ? `Mask Replace created ${added} tile(s).`
+        : `Mask to Tile added ${added} tile(s).`;
     return true;
 }
 
@@ -1802,6 +1807,13 @@ function renderEditor(node) {
                 renderEditor(node);
             }
         }, !paintMaskHasPixels(ensurePaintMaskCanvas(node)) || tiles.length >= MAX_TILES),
+        createButton("Mask Replace", () => {
+            if (addPaintMaskTiles(node, tiles, 0, true)) {
+                renderEditor(node);
+            } else {
+                renderEditor(node);
+            }
+        }, !paintMaskHasPixels(ensurePaintMaskCanvas(node))),
         createButton("Refresh masks", async () => {
             updateGridValues();
             const refreshed = await refreshInheritedMasks(node, tiles, gridMaskMode(node)).catch((error) => {

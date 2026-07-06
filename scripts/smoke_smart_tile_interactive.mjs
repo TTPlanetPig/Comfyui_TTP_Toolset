@@ -76,6 +76,7 @@ assert(/auto_paint_mask/.test(source), "tile editor should sync painted masks in
 assert(/Brush/.test(source), "tile editor should expose a paint brush action");
 assert(/Erase/.test(source), "tile editor should expose an erase action");
 assert(/Mask to Tile/.test(source), "tile editor should expose a button that commits painted masks into layout tiles");
+assert(/Mask Replace/.test(source), "tile editor should expose a button that replaces the layout with painted mask tiles");
 assert(/Refresh masks/.test(source), "tile editor should expose a refresh masks action");
 assert(/refreshInheritedMasks\(node, tiles, gridMaskMode\(node\)\)/.test(source), "Refresh masks should use the current grid mask mode");
 assert(/function addPaintMaskTiles/.test(source), "tile editor should convert painted masks into persisted tiles");

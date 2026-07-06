@@ -4087,6 +4087,255 @@ class TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental:
         return (next_tile_set, prompt_set_json, summary)
 
 
+class TTP_Smart_Tile_Prompt_Override_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        text_modes = ["keep", "replace", "prepend", "append", "find_replace", "clear"]
+        return {
+            "required": {
+                "tile_set": ("TTP_SMART_TILE_SET", {"forceInput": True}),
+                "selector_type": ([
+                    "all",
+                    "index",
+                    "name",
+                    "label",
+                    "prompt_tag",
+                    "source",
+                    "semantic_category",
+                    "semantic_role",
+                    "prompt_contains",
+                    "regex",
+                ], {"default": "label"}),
+                "selector": ("STRING", {"default": "", "multiline": False}),
+                "unmatched_mode": (["keep", "drop_unmatched"], {"default": "keep"}),
+                "prompt_mode": (text_modes, {"default": "replace"}),
+                "prompt_text": ("STRING", {"default": "", "multiline": True, "dynamicPrompts": False}),
+                "negative_mode": (text_modes, {"default": "keep"}),
+                "negative_text": ("STRING", {"default": "", "multiline": True, "dynamicPrompts": False}),
+                "find_text": ("STRING", {"default": "", "multiline": False, "dynamicPrompts": False}),
+            }
+        }
+
+    RETURN_TYPES = ("TTP_SMART_TILE_SET", "STRING", "STRING")
+    RETURN_NAMES = ("tile_set", "override_json", "summary")
+    FUNCTION = "override_prompts"
+    CATEGORY = "TTP/Smart Tile"
+
+    @staticmethod
+    def _selector_terms(selector):
+        return [
+            part.strip()
+            for part in re.split(r"[,;\n]+", str(selector or ""))
+            if part.strip()
+        ]
+
+    @staticmethod
+    def _selector_index_set(selector, count):
+        indexes = set()
+        for term in TTP_Smart_Tile_Prompt_Override_Experimental._selector_terms(selector):
+            cleaned = term.strip()
+            t_range = re.match(r"^[tT]\s*(\d+)\s*-\s*[tT]?\s*(\d+)$", cleaned)
+            zero_range = re.match(r"^(\d+)\s*-\s*(\d+)$", cleaned)
+            t_single = re.match(r"^[tT]\s*(\d+)$", cleaned)
+            zero_single = re.match(r"^\d+$", cleaned)
+            if t_range:
+                start = int(t_range.group(1)) - 1
+                end = int(t_range.group(2)) - 1
+            elif zero_range:
+                start = int(zero_range.group(1))
+                end = int(zero_range.group(2))
+            elif t_single:
+                start = end = int(t_single.group(1)) - 1
+            elif zero_single:
+                start = end = int(cleaned)
+            else:
+                continue
+            if end < start:
+                start, end = end, start
+            for index in range(start, end + 1):
+                if 0 <= index < count:
+                    indexes.add(index)
+        return indexes
+
+    @staticmethod
+    def _match_tile(tile, index, count, selector_type, selector):
+        selector_type = str(selector_type or "label")
+        if selector_type == "all":
+            return True
+        if selector_type == "index":
+            return index in TTP_Smart_Tile_Prompt_Override_Experimental._selector_index_set(selector, count)
+
+        terms = [term.lower() for term in TTP_Smart_Tile_Prompt_Override_Experimental._selector_terms(selector)]
+        if not terms:
+            return False
+
+        fields = {
+            "name": [tile.get("name", "")],
+            "label": [tile.get("label", "")],
+            "prompt_tag": [tile.get("prompt_tag", "")],
+            "source": [tile.get("source", "")],
+            "semantic_category": [tile.get("semantic_category", "")],
+            "semantic_role": [tile.get("semantic_role", "")],
+            "prompt_contains": [tile.get("prompt", ""), tile.get("negative", ""), tile.get("caption", "")],
+        }
+        searchable = fields.get(selector_type)
+        if selector_type == "regex":
+            searchable = [
+                str(index),
+                str(index + 1),
+                tile.get("name", ""),
+                tile.get("label", ""),
+                tile.get("prompt_tag", ""),
+                tile.get("source", ""),
+                tile.get("semantic_category", ""),
+                tile.get("semantic_role", ""),
+                tile.get("caption", ""),
+                tile.get("prompt", ""),
+                tile.get("negative", ""),
+            ]
+            text = "\n".join(str(value or "") for value in searchable)
+            try:
+                return bool(re.search(str(selector or ""), text, flags=re.IGNORECASE))
+            except re.error as exc:
+                raise ValueError(f"Invalid Smart Tile prompt override regex: {exc}") from exc
+        if searchable is None:
+            searchable = [
+                tile.get("name", ""),
+                tile.get("label", ""),
+                tile.get("prompt_tag", ""),
+                tile.get("source", ""),
+                tile.get("caption", ""),
+                tile.get("prompt", ""),
+            ]
+        text = "\n".join(str(value or "").lower() for value in searchable)
+        return any(term in text for term in terms)
+
+    @staticmethod
+    def _join_text(prefix, suffix):
+        prefix = str(prefix or "").strip()
+        suffix = str(suffix or "").strip()
+        if prefix and suffix:
+            return f"{prefix}\n{suffix}"
+        return prefix or suffix
+
+    @staticmethod
+    def _apply_text_mode(current, mode, text, find_text):
+        current = str(current or "")
+        mode = str(mode or "keep")
+        text = str(text or "").strip()
+        find_text = str(find_text or "")
+        if mode == "keep":
+            return current
+        if mode == "clear":
+            return ""
+        if mode == "replace":
+            return text
+        if mode == "prepend":
+            return TTP_Smart_Tile_Prompt_Override_Experimental._join_text(text, current)
+        if mode == "append":
+            return TTP_Smart_Tile_Prompt_Override_Experimental._join_text(current, text)
+        if mode == "find_replace":
+            return current.replace(find_text, text) if find_text else current
+        return current
+
+    @staticmethod
+    def _position_for_tile(tile):
+        box = tile.get("paste_box", tile.get("core_box", [0, 0, 1, 1]))
+        x, y, w, h = [int(round(float(value))) for value in box[:4]]
+        return (x, y, x + max(1, w), y + max(1, h))
+
+    def override_prompts(
+        self,
+        tile_set,
+        selector_type="label",
+        selector="",
+        unmatched_mode="keep",
+        prompt_mode="replace",
+        prompt_text="",
+        negative_mode="keep",
+        negative_text="",
+        find_text="",
+    ):
+        tile_images, _tile_meta, tiles_info = _ttp_validate_tile_set(tile_set)
+        next_tile_set = _ttp_clone_tile_set(tile_set)
+        next_tiles = next_tile_set["tile_meta"]["tiles"]
+        next_images = list(next_tile_set.get("tile_images", []))
+        next_positions = list(next_tile_set.get("positions", []))
+
+        kept_tiles = []
+        kept_images = []
+        kept_positions = []
+        records = []
+        matched_count = 0
+        drop_unmatched = str(unmatched_mode or "keep") == "drop_unmatched"
+        count = len(tiles_info)
+
+        for index, tile in enumerate(next_tiles):
+            matched = self._match_tile(tile, index, count, selector_type, selector)
+            if not matched and drop_unmatched:
+                continue
+
+            updated = dict(tile)
+            if matched:
+                matched_count += 1
+                before_prompt = str(updated.get("prompt", ""))
+                before_negative = str(updated.get("negative", ""))
+                updated["prompt"] = self._apply_text_mode(before_prompt, prompt_mode, prompt_text, find_text)
+                updated["negative"] = self._apply_text_mode(before_negative, negative_mode, negative_text, find_text)
+                existing_source = str(updated.get("prompt_source", "") or "")
+                updated["prompt_source"] = f"{existing_source}+override" if existing_source else "override"
+                updated["prompt_override"] = True
+                updated["prompt_override_selector_type"] = str(selector_type or "")
+                updated["prompt_override_selector"] = str(selector or "")
+                records.append({
+                    "index": int(index),
+                    "name": updated.get("name", f"tile_{index}"),
+                    "label": updated.get("label", ""),
+                    "prompt_before": before_prompt,
+                    "prompt_after": updated["prompt"],
+                    "negative_before": before_negative,
+                    "negative_after": updated["negative"],
+                })
+
+            kept_tiles.append(updated)
+            kept_images.append(next_images[index] if index < len(next_images) else tile_images[index])
+            if index < len(next_positions):
+                kept_positions.append(next_positions[index])
+            else:
+                kept_positions.append(self._position_for_tile(updated))
+
+        if not kept_tiles:
+            raise ValueError("Smart Tile prompt override kept no tiles. Change selector or unmatched_mode.")
+
+        for new_index, tile in enumerate(kept_tiles):
+            tile["id"] = new_index
+
+        next_tile_set["tile_meta"]["tiles"] = kept_tiles
+        next_tile_set["tile_images"] = kept_images
+        next_tile_set["positions"] = kept_positions
+
+        override_json = json.dumps({
+            "type": "ttp_smart_tile_prompt_override",
+            "selector_type": str(selector_type or ""),
+            "selector": str(selector or ""),
+            "unmatched_mode": str(unmatched_mode or "keep"),
+            "prompt_mode": str(prompt_mode or "keep"),
+            "negative_mode": str(negative_mode or "keep"),
+            "matched": int(matched_count),
+            "kept": int(len(kept_tiles)),
+            "dropped": int(count - len(kept_tiles)),
+            "tiles": records,
+        }, ensure_ascii=False, indent=2)
+        summary_lines = [
+            f"matched={matched_count} kept={len(kept_tiles)} dropped={count - len(kept_tiles)} selector={selector_type}:{selector}"
+        ]
+        summary_lines.extend(
+            f'{record["index"]}:{record["name"]} -> {_ttp_compact_text(record["prompt_after"], 160)}'
+            for record in records
+        )
+        return (next_tile_set, override_json, "\n".join(summary_lines))
+
+
 class TTP_Smart_Tile_Loop_Source_Experimental:
     @classmethod
     def INPUT_TYPES(cls):
@@ -6092,6 +6341,7 @@ NODE_CLASS_MAPPINGS = {
     "TTP_Smart_Tile_Set_Preview_Experimental": TTP_Smart_Tile_Set_Preview_Experimental,
     "TTP_QwenVL3_Local_Loader_Experimental": TTP_QwenVL3_Local_Loader_Experimental,
     "TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental": TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental,
+    "TTP_Smart_Tile_Prompt_Override_Experimental": TTP_Smart_Tile_Prompt_Override_Experimental,
     "TTP_Smart_Tile_Loop_Source_Experimental": TTP_Smart_Tile_Loop_Source_Experimental,
     "TTP_Smart_Tile_Loop_Collect_Experimental": TTP_Smart_Tile_Loop_Collect_Experimental,
     "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": TTP_Smart_Tile_Image_Upscale_Prep_Experimental,
@@ -6117,6 +6367,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TTP_Smart_Tile_Set_Preview_Experimental": "TTP Smart Tile Set Preview",
     "TTP_QwenVL3_Local_Loader_Experimental": "TTP QwenVL3 Local Loader",
     "TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental": "TTP Smart Tile QwenVL Prompt Set Builder",
+    "TTP_Smart_Tile_Prompt_Override_Experimental": "TTP Smart Tile Prompt Override",
     "TTP_Smart_Tile_Loop_Source_Experimental": "TTP Smart Tile Loop Source",
     "TTP_Smart_Tile_Loop_Collect_Experimental": "TTP Smart Tile Loop Collect",
     "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": "TTP Smart Tile Image Upscale Prep",

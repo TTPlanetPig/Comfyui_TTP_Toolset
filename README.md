@@ -55,6 +55,7 @@ When subdividing a masked tile with `Grid in`, the Mask mode can crop the origin
 | `TTP Smart Tile Set Preview` | Preview a tile set as a contact sheet or one selected tile. |
 | `TTP QwenVL3 Local Loader` | Load a local QwenVL tagging model from `ComfyUI/models/text_encoders`. |
 | `TTP Smart Tile QwenVL Prompt Set Builder` | Generate per-tile prompts before loop processing. |
+| `TTP Smart Tile Prompt Override` | Filter selected tiles and replace, prepend, append, or find/replace per-tile prompts before sampling. |
 | `TTP Smart Tile Semantic Rank` | Classify tiles and write recommended layer, priority, scale weight, and composite metadata. |
 | `TTP Smart Tile Loop Source` | Output one tile at a time for VAE Encode / sampler / VAE Decode. |
 | `TTP Smart Tile Loop Collect` | Collect each processed tile back into the same tile set. |
@@ -68,6 +69,7 @@ When subdividing a masked tile with `Grid in`, the Mask mode can crop the origin
 ```text
 TTP Smart Tile Interactive Crop
   -> TTP Smart Tile QwenVL Prompt Set Builder (optional)
+  -> TTP Smart Tile Prompt Override (optional)
   -> TTP Smart Tile Semantic Rank (optional)
   -> TTP Smart Tile Loop Source
   -> VAE Encode / Sampler / VAE Decode
@@ -114,6 +116,7 @@ This workflow is the recommended full Smart Tile loop. It uses `TTP Smart Tile I
 | `Interactive Crop` | `auto_detect_mode=sam3.1`, `default_pad=32`, `default_blend=32`, `auto_object_padding=64`, `auto_max_tiles=16` | Use `Auto Tile` to create an object-aware layout, then set `auto_detect_mode=none` if you want to freeze manual edits. / 用 `Auto Tile` 生成语义分块；如果之后要固定手动编辑结果，可以把 `auto_detect_mode` 改回 `none`。 |
 | `QwenVL3 Local Loader` | `qwen3vl_4b_fp8_scaled.safetensors` | Replace this with the QwenVL model installed in `ComfyUI/models/text_encoders`. / 按你本机 `models/text_encoders` 里的 QwenVL 模型替换。 |
 | `QwenVL Prompt Set Builder` | `reference_image_mode=first_message`, `prompt_preset=tile_img2img_prompt`, `output_language=chinese` | Builds prompts before the tile loop, then `Loop Source.prompt` feeds the text encoder. / 在循环前一次性生成每块提示词，然后由 `Loop Source.prompt` 送入文本编码。 |
+| `Prompt Override` | `selector_type=label`, `selector=face`, `prompt_mode=replace` | Rewrites only matched tile prompts. Use `drop_unmatched` when only selected regions should run through an edit sampler and Assemble should keep the rest from `source_image`. / 只改写匹配 tile 的提示词；局部 edit 时可用 `drop_unmatched`，其余区域由 Assemble 的 `source_image` 底图保留。 |
 | `Image Upscale Prep` | `scale=2.5`, `round_to=8`, `max_megapixels=1.5`, `use_upscale_model=true` | Enlarges each tile before img2img while keeping each tile under the megapixel cap. / 采样前放大每块 tile，同时用百万像素上限控制显存。 |
 | `Loop Source` / `Loop Collect` | `Process All Tiles` workflow | The tile count can be 4, 8, 16, or any layout count; no manual sampler duplication is needed. / 分块数量可以变化，不需要手动复制多套 sampler。 |
 | `Output Size Estimate` | `focus_weighted` | Estimates the final canvas from processed tile sizes, giving more influence to focus/detail tiles. / 根据处理后的 tile 尺寸估算最终画布，并更重视细节块。 |

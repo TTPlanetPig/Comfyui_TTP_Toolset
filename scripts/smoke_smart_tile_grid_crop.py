@@ -257,6 +257,82 @@ assert_equal(
     ttp.TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental,
     "prompt builder should be registered",
 )
+prompt_override_inputs = ttp.TTP_Smart_Tile_Prompt_Override_Experimental.INPUT_TYPES()
+assert_equal(prompt_override_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "prompt override should accept Smart Tile Set")
+assert_equal(prompt_override_inputs["required"]["tile_set"][1].get("forceInput"), True, "prompt override tile_set should be a forceInput connection")
+assert_equal("regex" in prompt_override_inputs["required"]["selector_type"][0], True, "prompt override should support regex selectors")
+assert_equal(prompt_override_inputs["required"]["unmatched_mode"][0], ["keep", "drop_unmatched"], "prompt override should allow dropping unmatched tiles")
+assert_equal(prompt_override_inputs["required"]["prompt_text"][1]["dynamicPrompts"], False, "prompt override text should not use dynamic prompt parsing")
+assert_equal(
+    ttp.NODE_CLASS_MAPPINGS["TTP_Smart_Tile_Prompt_Override_Experimental"],
+    ttp.TTP_Smart_Tile_Prompt_Override_Experimental,
+    "prompt override should be registered",
+)
+
+override_tile_set = {
+    "version": 1,
+    "type": "ttp_smart_tile_set",
+    "original_size": [100, 100],
+    "tile_meta": {
+        "version": 3,
+        "type": "ttp_smart_tile",
+        "storage": "tile_set",
+        "original_size": [100, 100],
+        "tiles": [
+            {
+                "id": 0,
+                "name": "tile_1",
+                "label": "face",
+                "source": "paint_mask",
+                "core_box": [0, 0, 50, 50],
+                "sample_box": [0, 0, 50, 50],
+                "paste_box": [0, 0, 50, 50],
+                "prompt": "old face prompt",
+                "negative": "old face negative",
+            },
+            {
+                "id": 1,
+                "name": "tile_2",
+                "label": "background",
+                "source": "manual",
+                "core_box": [50, 0, 50, 50],
+                "sample_box": [50, 0, 50, 50],
+                "paste_box": [50, 0, 50, 50],
+                "prompt": "old background prompt",
+                "negative": "old background negative",
+            },
+        ],
+    },
+    "tile_images": ["face_image", "background_image"],
+    "positions": [(0, 0, 50, 50), (50, 0, 100, 50)],
+}
+override_node = ttp.TTP_Smart_Tile_Prompt_Override_Experimental()
+overridden_set, override_json, override_summary = override_node.override_prompts(
+    override_tile_set,
+    selector_type="label",
+    selector="face",
+    unmatched_mode="keep",
+    prompt_mode="replace",
+    prompt_text="edit only the face",
+    negative_mode="append",
+    negative_text="avoid changing identity",
+)
+assert_equal(overridden_set["tile_meta"]["tiles"][0]["prompt"], "edit only the face", "prompt override should replace matched tile prompt")
+assert_equal(overridden_set["tile_meta"]["tiles"][0]["negative"], "old face negative\navoid changing identity", "prompt override should append matched tile negative")
+assert_equal(overridden_set["tile_meta"]["tiles"][1]["prompt"], "old background prompt", "prompt override should keep unmatched tile prompt")
+assert_equal(json.loads(override_json)["matched"], 1, "prompt override JSON should report matched tile count")
+assert_equal("matched=1" in override_summary, True, "prompt override summary should report matched count")
+dropped_set, _dropped_json, _dropped_summary = override_node.override_prompts(
+    override_tile_set,
+    selector_type="label",
+    selector="face",
+    unmatched_mode="drop_unmatched",
+    prompt_mode="replace",
+    prompt_text="edit only the face",
+)
+assert_equal(len(dropped_set["tile_meta"]["tiles"]), 1, "prompt override should drop unmatched tile metadata")
+assert_equal(len(dropped_set["tile_images"]), 1, "prompt override should drop unmatched tile images")
+assert_equal(dropped_set["tile_meta"]["tiles"][0]["id"], 0, "prompt override should reindex kept tile ids")
 loop_source_inputs = ttp.TTP_Smart_Tile_Loop_Source_Experimental.INPUT_TYPES()
 assert_equal(loop_source_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "loop source should accept Smart Tile Set")
 assert_equal(loop_source_inputs["optional"]["clip"][0], "CLIP", "loop source should optionally encode tile prompts with CLIP")
