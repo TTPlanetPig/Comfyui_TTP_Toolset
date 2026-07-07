@@ -764,12 +764,17 @@ def _ttp_harden_stitch_mask_array(mask_array, feather=0, threshold=0.05):
     return np.maximum(hard, softened_array)[:, :, None]
 
 
-def _ttp_tile_object_mask_array(tile, out_width, out_height, mask_blend_mode="mask_feather", feather=0, hard_stitch=False):
+def _ttp_tile_object_mask_array(tile, out_width, out_height, mask_blend_mode="mask_feather", feather=0, hard_stitch=False, prefer_own_mask=False):
     if str(mask_blend_mode) == "off":
         return None
-    mask_data = tile.get("object_mask_source")
-    if not isinstance(mask_data, dict) or mask_data.get("format") != "png_base64":
+    if bool(prefer_own_mask):
         mask_data = tile.get("object_mask")
+        if not isinstance(mask_data, dict) or mask_data.get("format") != "png_base64":
+            mask_data = tile.get("object_mask_source")
+    else:
+        mask_data = tile.get("object_mask_source")
+        if not isinstance(mask_data, dict) or mask_data.get("format") != "png_base64":
+            mask_data = tile.get("object_mask")
     mask_pil = _ttp_decode_object_mask_data(mask_data)
     if mask_pil is None:
         return None
@@ -5571,6 +5576,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 mask_mode,
                 blend,
                 hard_stitch=replace_tile_mode and tile_replace_shape != "tile_box_first",
+                prefer_own_mask=replace_tile_mode,
             )
             if replace_tile_mode:
                 if tile_replace_shape == "tile_box_first":
