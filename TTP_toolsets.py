@@ -454,7 +454,7 @@ def _ttp_normalize_tile_box(tile, image_width, image_height, defaults):
         normalized["object_mask"] = dict(tile["object_mask"])
     if isinstance(tile.get("object_mask_source"), dict):
         normalized["object_mask_source"] = dict(tile["object_mask_source"])
-    for key in ("caption", "prompt", "negative", "semantic_category", "semantic_role", "recommended_composite_mode"):
+    for key in ("caption", "prompt", "negative", "semantic_category", "semantic_role", "recommended_composite_mode", "composite_mode", "replace_tile_shape"):
         if key in tile:
             normalized[key] = str(tile.get(key, ""))
     for key in (
@@ -463,6 +463,7 @@ def _ttp_normalize_tile_box(tile, image_width, image_height, defaults):
         "recommended_layer",
         "recommended_priority",
         "recommended_occlusion_priority",
+        "object_mask_expand",
     ):
         if key in tile:
             normalized[key] = _ttp_safe_float(tile.get(key), 0.0)
@@ -691,7 +692,20 @@ def _ttp_mask_tensor_to_pil_list(masks, image_width, image_height):
     return result
 
 
-def _ttp_encode_object_mask_data(mask_images, mask_indices, box):
+def _ttp_expand_l_mask(mask, expand_px):
+    expand_px = max(0, min(2048, int(round(float(expand_px or 0)))))
+    if expand_px <= 0:
+        return mask.convert("L")
+    expanded = mask.convert("L")
+    remaining = expand_px
+    while remaining > 0:
+        step = min(remaining, 127)
+        expanded = expanded.filter(ImageFilter.MaxFilter(step * 2 + 1))
+        remaining -= step
+    return expanded
+
+
+def _ttp_encode_object_mask_data(mask_images, mask_indices, box, mask_expand=0):
     if not mask_images or not mask_indices:
         return None
     x0, y0, x1, y1 = [int(round(value)) for value in box]
@@ -705,6 +719,9 @@ def _ttp_encode_object_mask_data(mask_images, mask_indices, box):
         if cropped.getbbox() is None:
             continue
         combined = ImageChops.lighter(combined, cropped)
+    if combined.getbbox() is None:
+        return None
+    combined = _ttp_expand_l_mask(combined, mask_expand)
     if combined.getbbox() is None:
         return None
     buffer = BytesIO()
@@ -728,12 +745,36 @@ def _ttp_decode_object_mask_data(mask_data):
         return None
 
 
-def _ttp_tile_object_mask_array(tile, out_width, out_height, mask_blend_mode="mask_feather", feather=0):
+def _ttp_harden_stitch_mask_array(mask_array, feather=0, threshold=0.05):
+    mask_2d = np.clip(np.asarray(mask_array, dtype=np.float32), 0.0, 1.0)
+    hard = (mask_2d > float(threshold)).astype(np.float32)
+    if float(hard.max()) <= 0.0:
+        return hard[:, :, None]
+
+    feather = max(0, int(round(float(feather))))
+    if feather <= 0:
+        return hard[:, :, None]
+
+    hard_pil = Image.fromarray((hard * 255.0).astype(np.uint8), mode="L")
+    expand_px = max(1, min(64, int(round(float(feather) * 0.25))))
+    hard_pil = hard_pil.filter(ImageFilter.MaxFilter(expand_px * 2 + 1))
+    blur_radius = max(0.75, min(64.0, float(feather) * 0.25))
+    softened = hard_pil.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    softened_array = np.array(softened).astype(np.float32) / 255.0
+    return np.maximum(hard, softened_array)[:, :, None]
+
+
+def _ttp_tile_object_mask_array(tile, out_width, out_height, mask_blend_mode="mask_feather", feather=0, hard_stitch=False, prefer_own_mask=False):
     if str(mask_blend_mode) == "off":
         return None
-    mask_data = tile.get("object_mask_source")
-    if not isinstance(mask_data, dict) or mask_data.get("format") != "png_base64":
+    if bool(prefer_own_mask):
         mask_data = tile.get("object_mask")
+        if not isinstance(mask_data, dict) or mask_data.get("format") != "png_base64":
+            mask_data = tile.get("object_mask_source")
+    else:
+        mask_data = tile.get("object_mask_source")
+        if not isinstance(mask_data, dict) or mask_data.get("format") != "png_base64":
+            mask_data = tile.get("object_mask")
     mask_pil = _ttp_decode_object_mask_data(mask_data)
     if mask_pil is None:
         return None
@@ -757,6 +798,10 @@ def _ttp_tile_object_mask_array(tile, out_width, out_height, mask_blend_mode="ma
         (paste_x + clip_left, paste_y + clip_top),
     )
     source_mask = source_mask.resize((out_width, out_height), Image.Resampling.BILINEAR)
+    if hard_stitch:
+        source_array = np.array(source_mask).astype(np.float32) / 255.0
+        stitch_feather = feather if str(mask_blend_mode) in ("auto", "mask_feather") else 0
+        return _ttp_harden_stitch_mask_array(source_array, stitch_feather)
     if str(mask_blend_mode) in ("auto", "mask_feather"):
         min_radius = min(12.0, max(0.75, min(int(out_width), int(out_height)) * 0.006))
         radius = max(min_radius, float(feather) * 0.35)
@@ -820,6 +865,7 @@ def _ttp_tile_semantic_text(tile):
         "prompt",
         "prompt_tag",
         "prompt_source",
+        "composite_mode",
         "object_id",
         "semantic_category",
         "semantic_role",
@@ -999,12 +1045,39 @@ def _ttp_weighted_percentile(values, weights=None, percentile=0.7):
     return float(value_array[index])
 
 
+def _ttp_tile_composite_mode(tile):
+    return str(tile.get("composite_mode", tile.get("recommended_composite_mode", "")) or "").strip().lower()
+
+
+def _ttp_is_replace_tile_mode(mode):
+    return str(mode or "").strip().lower() in ("replace_tile", "hard_replace", "hard_replace_tile")
+
+
+def _ttp_normalize_replace_tile_shape(value, default="mask_first"):
+    default = str(default or "mask_first").strip().lower()
+    if default not in ("mask_first", "tile_box_first"):
+        default = "mask_first"
+    mode = str(value or default).strip().lower()
+    if mode in ("tile_box_first", "box_first", "rectangle_first", "rect_first", "square_first", "tile_box", "rectangle", "rect", "box", "square"):
+        return "tile_box_first"
+    if mode in ("mask_first", "mask", "object_mask", "mask_priority"):
+        return "mask_first"
+    return default
+
+
+def _ttp_tile_replace_shape(tile, default="mask_first"):
+    mode = str(tile.get("replace_tile_shape", "") or "").strip().lower()
+    if not mode or mode == "keep":
+        return _ttp_normalize_replace_tile_shape(default)
+    return _ttp_normalize_replace_tile_shape(mode, default)
+
+
 def _ttp_should_soft_overlay_tile(tile, policy, is_large_tile, tile_area_ratio, large_tile_area_threshold):
     policy = str(policy or "safe_auto")
-    if policy in ("strict_layer", "replace_object") or is_large_tile:
+    tile_mode = _ttp_tile_composite_mode(tile)
+    if policy in ("strict_layer", "replace_object", "replace_tile") or _ttp_is_replace_tile_mode(tile_mode) or is_large_tile:
         return False
-    recommended_mode = str(tile.get("recommended_composite_mode", "") or "").lower()
-    if recommended_mode == "soft_overlay":
+    if tile_mode == "soft_overlay":
         return True
     text = _ttp_tile_semantic_text(tile)
     if _ttp_is_context_tile_text(text):
@@ -1558,6 +1631,7 @@ def _ttp_boxes_to_auto_layout(
     default_pad=128,
     default_blend=64,
     object_padding=96,
+    mask_expand=16,
     max_tiles=16,
     include_background=True,
     allow_object_overlap=True,
@@ -1636,9 +1710,11 @@ def _ttp_boxes_to_auto_layout(
                 "recommended_occlusion_priority": 0.0,
                 "recommended_composite_mode": "context",
             })
-        object_mask = _ttp_encode_object_mask_data(mask_images, item.get("mask_indices", []), box)
+        object_mask = _ttp_encode_object_mask_data(mask_images, item.get("mask_indices", []), box, mask_expand=mask_expand)
         if object_mask is not None:
             tile["object_mask"] = object_mask
+            if int(mask_expand) > 0:
+                tile["object_mask_expand"] = int(mask_expand)
         tiles.append(tile)
 
     if len(tiles) == (1 if include_background else 0):
@@ -2095,6 +2171,8 @@ def _ttp_tile_set_fingerprint(tile_set):
             "recommended_priority": tile.get("recommended_priority", ""),
             "recommended_occlusion_priority": tile.get("recommended_occlusion_priority", ""),
             "recommended_composite_mode": tile.get("recommended_composite_mode", ""),
+            "composite_mode": tile.get("composite_mode", ""),
+            "replace_tile_shape": tile.get("replace_tile_shape", ""),
             "object_mask": _ttp_mask_data_signature(tile.get("object_mask")),
             "object_mask_source": _ttp_mask_data_signature(tile.get("object_mask_source")),
             "prompt": tile.get("prompt", ""),
@@ -2970,6 +3048,7 @@ def _ttp_run_sam3_auto_layout(
     default_pad,
     default_blend,
     object_padding,
+    mask_expand,
     max_tiles,
     allow_object_overlap,
     paint_mask_payload=None,
@@ -3012,6 +3091,7 @@ def _ttp_run_sam3_auto_layout(
         default_pad=int(default_pad),
         default_blend=int(default_blend),
         object_padding=int(object_padding),
+        mask_expand=int(mask_expand),
         max_tiles=int(max_tiles),
         include_background=False,
         allow_object_overlap=bool(allow_object_overlap),
@@ -3147,6 +3227,7 @@ def _ttp_run_qwenvl3_auto_layout(
     default_pad,
     default_blend,
     object_padding,
+    mask_expand,
     max_tiles,
     allow_object_overlap,
     paint_mask_payload=None,
@@ -3184,6 +3265,7 @@ def _ttp_run_qwenvl3_auto_layout(
         default_pad=int(default_pad),
         default_blend=int(default_blend),
         object_padding=int(object_padding),
+        mask_expand=int(mask_expand),
         max_tiles=int(max_tiles),
         include_background=False,
         allow_object_overlap=bool(allow_object_overlap),
@@ -3200,6 +3282,7 @@ def _ttp_run_paint_mask_auto_layout(
     default_pad,
     default_blend,
     object_padding,
+    mask_expand,
     max_tiles,
     allow_object_overlap,
 ):
@@ -3215,6 +3298,7 @@ def _ttp_run_paint_mask_auto_layout(
         default_pad=int(default_pad),
         default_blend=int(default_blend),
         object_padding=int(object_padding),
+        mask_expand=int(mask_expand),
         max_tiles=int(max_tiles),
         include_background=False,
         allow_object_overlap=bool(allow_object_overlap),
@@ -3490,6 +3574,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
                 }),
                 "allow_object_overlap": ("BOOLEAN", {"default": True}),
                 "auto_object_padding": ("INT", {"default": 96, "min": 0, "max": 2048, "step": 8}),
+                "auto_mask_expand": ("INT", {"default": 16, "min": 0, "max": 2048, "step": 4}),
                 "auto_max_tiles": ("INT", {"default": 16, "min": 1, "max": 64, "step": 1}),
                 "auto_paint_mask": ("STRING", {"default": "", "multiline": False}),
             },
@@ -3526,6 +3611,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
             "auto_prompt": kwargs.get("auto_prompt", ""),
             "allow_object_overlap": kwargs.get("allow_object_overlap", True),
             "auto_object_padding": kwargs.get("auto_object_padding", 96),
+            "auto_mask_expand": kwargs.get("auto_mask_expand", 16),
             "auto_max_tiles": kwargs.get("auto_max_tiles", 16),
             "auto_paint_mask": hashlib.sha256(str(kwargs.get("auto_paint_mask", "") or "").encode("utf-8")).hexdigest()[:16],
             "source_image": type(kwargs.get("source_image")).__name__ if kwargs.get("source_image") is not None else None,
@@ -3560,6 +3646,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
         auto_prompt="person, face, hands, eyes, text, foreground object, important object",
         allow_object_overlap=True,
         auto_object_padding=96,
+        auto_mask_expand=16,
         auto_max_tiles=16,
         auto_paint_mask="",
         source_image=None,
@@ -3585,6 +3672,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
                         int(default_pad),
                         int(default_blend),
                         int(auto_object_padding),
+                        int(auto_mask_expand),
                         int(auto_max_tiles),
                         bool(allow_object_overlap),
                         auto_paint_mask,
@@ -3598,6 +3686,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
                         int(default_pad),
                         int(default_blend),
                         int(auto_object_padding),
+                        int(auto_mask_expand),
                         int(auto_max_tiles),
                         bool(allow_object_overlap),
                         auto_paint_mask,
@@ -3610,6 +3699,7 @@ class TTP_Smart_Tile_Interactive_Crop_Experimental:
                         int(default_pad),
                         int(default_blend),
                         int(auto_object_padding),
+                        int(auto_mask_expand),
                         int(auto_max_tiles),
                         bool(allow_object_overlap),
                     )
@@ -4085,6 +4175,564 @@ class TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental:
         summary_lines.extend(f'{item["index"]}: {item["label"]} -> {item["prompt"]}' for item in prompt_records)
         summary = "\n".join(summary_lines)
         return (next_tile_set, prompt_set_json, summary)
+
+
+class TTP_Smart_Tile_Prompt_Override_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        text_modes = ["keep", "replace", "prepend", "append", "find_replace", "clear"]
+        return {
+            "required": {
+                "tile_set": ("TTP_SMART_TILE_SET", {"forceInput": True}),
+                "selector_type": ([
+                    "all",
+                    "index",
+                    "name",
+                    "label",
+                    "prompt_tag",
+                    "source",
+                    "semantic_category",
+                    "semantic_role",
+                    "prompt_contains",
+                    "regex",
+                ], {"default": "label"}),
+                "selector": ("STRING", {"default": "", "multiline": False}),
+                "unmatched_mode": (["keep", "drop_unmatched"], {"default": "keep"}),
+                "prompt_mode": (text_modes, {"default": "replace"}),
+                "prompt_text": ("STRING", {"default": "", "multiline": True, "dynamicPrompts": False}),
+                "negative_mode": (text_modes, {"default": "keep"}),
+                "negative_text": ("STRING", {"default": "", "multiline": True, "dynamicPrompts": False}),
+                "find_text": ("STRING", {"default": "", "multiline": False, "dynamicPrompts": False}),
+            }
+        }
+
+    RETURN_TYPES = ("TTP_SMART_TILE_SET", "STRING", "STRING")
+    RETURN_NAMES = ("tile_set", "override_json", "summary")
+    FUNCTION = "override_prompts"
+    CATEGORY = "TTP/Smart Tile"
+
+    @staticmethod
+    def _selector_terms(selector):
+        return [
+            part.strip()
+            for part in re.split(r"[,;，、\n\r]+", str(selector or ""))
+            if part.strip()
+        ]
+
+    @staticmethod
+    def _selector_index_order(selector, count):
+        indexes = []
+        seen = set()
+        for term in TTP_Smart_Tile_Prompt_Override_Experimental._selector_terms(selector):
+            cleaned = term.strip()
+            t_range = re.match(r"^[tT]\s*(\d+)\s*-\s*[tT]?\s*(\d+)$", cleaned)
+            zero_range = re.match(r"^(\d+)\s*-\s*(\d+)$", cleaned)
+            t_single = re.match(r"^[tT]\s*(\d+)$", cleaned)
+            zero_single = re.match(r"^\d+$", cleaned)
+            if t_range:
+                start = int(t_range.group(1)) - 1
+                end = int(t_range.group(2)) - 1
+            elif zero_range:
+                start = int(zero_range.group(1))
+                end = int(zero_range.group(2))
+            elif t_single:
+                start = end = int(t_single.group(1)) - 1
+            elif zero_single:
+                start = end = int(cleaned)
+            else:
+                continue
+            if end < start:
+                start, end = end, start
+            for index in range(start, end + 1):
+                if 0 <= index < count and index not in seen:
+                    indexes.append(index)
+                    seen.add(index)
+        return indexes
+
+    @staticmethod
+    def _selector_index_set(selector, count):
+        indexes = set()
+        for index in TTP_Smart_Tile_Prompt_Override_Experimental._selector_index_order(selector, count):
+            indexes.add(index)
+        return indexes
+
+    @staticmethod
+    def _match_tile(tile, index, count, selector_type, selector):
+        selector_type = str(selector_type or "label")
+        if selector_type == "all":
+            return True
+        if selector_type == "index":
+            return index in TTP_Smart_Tile_Prompt_Override_Experimental._selector_index_set(selector, count)
+
+        terms = [term.lower() for term in TTP_Smart_Tile_Prompt_Override_Experimental._selector_terms(selector)]
+        if not terms:
+            return False
+
+        fields = {
+            "name": [tile.get("name", "")],
+            "label": [tile.get("label", "")],
+            "prompt_tag": [tile.get("prompt_tag", "")],
+            "source": [tile.get("source", "")],
+            "semantic_category": [tile.get("semantic_category", "")],
+            "semantic_role": [tile.get("semantic_role", "")],
+            "prompt_contains": [tile.get("prompt", ""), tile.get("negative", ""), tile.get("caption", "")],
+        }
+        searchable = fields.get(selector_type)
+        if selector_type == "regex":
+            searchable = [
+                str(index),
+                str(index + 1),
+                tile.get("name", ""),
+                tile.get("label", ""),
+                tile.get("prompt_tag", ""),
+                tile.get("source", ""),
+                tile.get("semantic_category", ""),
+                tile.get("semantic_role", ""),
+                tile.get("caption", ""),
+                tile.get("prompt", ""),
+                tile.get("negative", ""),
+            ]
+            text = "\n".join(str(value or "") for value in searchable)
+            try:
+                return bool(re.search(str(selector or ""), text, flags=re.IGNORECASE))
+            except re.error as exc:
+                raise ValueError(f"Invalid Smart Tile prompt override regex: {exc}") from exc
+        if searchable is None:
+            searchable = [
+                tile.get("name", ""),
+                tile.get("label", ""),
+                tile.get("prompt_tag", ""),
+                tile.get("source", ""),
+                tile.get("caption", ""),
+                tile.get("prompt", ""),
+            ]
+        text = "\n".join(str(value or "").lower() for value in searchable)
+        return any(term in text for term in terms)
+
+    @staticmethod
+    def _join_text(prefix, suffix):
+        prefix = str(prefix or "").strip()
+        suffix = str(suffix or "").strip()
+        if prefix and suffix:
+            return f"{prefix}\n{suffix}"
+        return prefix or suffix
+
+    @staticmethod
+    def _apply_text_mode(current, mode, text, find_text):
+        current = str(current or "")
+        mode = str(mode or "keep")
+        text = str(text or "").strip()
+        find_text = str(find_text or "")
+        if mode == "keep":
+            return current
+        if mode == "clear":
+            return ""
+        if mode == "replace":
+            return text
+        if mode == "prepend":
+            return TTP_Smart_Tile_Prompt_Override_Experimental._join_text(text, current)
+        if mode == "append":
+            return TTP_Smart_Tile_Prompt_Override_Experimental._join_text(current, text)
+        if mode == "find_replace":
+            return current.replace(find_text, text) if find_text else current
+        return current
+
+    @staticmethod
+    def _position_for_tile(tile):
+        box = tile.get("paste_box", tile.get("core_box", [0, 0, 1, 1]))
+        x, y, w, h = [int(round(float(value))) for value in box[:4]]
+        return (x, y, x + max(1, w), y + max(1, h))
+
+    def override_prompts(
+        self,
+        tile_set,
+        selector_type="label",
+        selector="",
+        unmatched_mode="keep",
+        prompt_mode="replace",
+        prompt_text="",
+        negative_mode="keep",
+        negative_text="",
+        find_text="",
+    ):
+        tile_images, _tile_meta, tiles_info = _ttp_validate_tile_set(tile_set)
+        next_tile_set = _ttp_clone_tile_set(tile_set)
+        next_tiles = next_tile_set["tile_meta"]["tiles"]
+        next_images = list(next_tile_set.get("tile_images", []))
+        next_positions = list(next_tile_set.get("positions", []))
+
+        kept_tiles = []
+        kept_images = []
+        kept_positions = []
+        records = []
+        matched_count = 0
+        drop_unmatched = str(unmatched_mode or "keep") == "drop_unmatched"
+        count = len(tiles_info)
+
+        for index, tile in enumerate(next_tiles):
+            matched = self._match_tile(tile, index, count, selector_type, selector)
+            if not matched and drop_unmatched:
+                continue
+
+            updated = dict(tile)
+            if matched:
+                matched_count += 1
+                before_prompt = str(updated.get("prompt", ""))
+                before_negative = str(updated.get("negative", ""))
+                updated["prompt"] = self._apply_text_mode(before_prompt, prompt_mode, prompt_text, find_text)
+                updated["negative"] = self._apply_text_mode(before_negative, negative_mode, negative_text, find_text)
+                existing_source = str(updated.get("prompt_source", "") or "")
+                updated["prompt_source"] = f"{existing_source}+override" if existing_source else "override"
+                updated["prompt_override"] = True
+                updated["prompt_override_selector_type"] = str(selector_type or "")
+                updated["prompt_override_selector"] = str(selector or "")
+                records.append({
+                    "index": int(index),
+                    "name": updated.get("name", f"tile_{index}"),
+                    "label": updated.get("label", ""),
+                    "prompt_before": before_prompt,
+                    "prompt_after": updated["prompt"],
+                    "negative_before": before_negative,
+                    "negative_after": updated["negative"],
+                })
+
+            kept_tiles.append(updated)
+            kept_images.append(next_images[index] if index < len(next_images) else tile_images[index])
+            if index < len(next_positions):
+                kept_positions.append(next_positions[index])
+            else:
+                kept_positions.append(self._position_for_tile(updated))
+
+        if not kept_tiles:
+            raise ValueError("Smart Tile prompt override kept no tiles. Change selector or unmatched_mode.")
+
+        for new_index, tile in enumerate(kept_tiles):
+            tile["id"] = new_index
+
+        next_tile_set["tile_meta"]["tiles"] = kept_tiles
+        next_tile_set["tile_images"] = kept_images
+        next_tile_set["positions"] = kept_positions
+
+        override_json = json.dumps({
+            "type": "ttp_smart_tile_prompt_override",
+            "selector_type": str(selector_type or ""),
+            "selector": str(selector or ""),
+            "unmatched_mode": str(unmatched_mode or "keep"),
+            "prompt_mode": str(prompt_mode or "keep"),
+            "negative_mode": str(negative_mode or "keep"),
+            "matched": int(matched_count),
+            "kept": int(len(kept_tiles)),
+            "dropped": int(count - len(kept_tiles)),
+            "tiles": records,
+        }, ensure_ascii=False, indent=2)
+        summary_lines = [
+            f"matched={matched_count} kept={len(kept_tiles)} dropped={count - len(kept_tiles)} selector={selector_type}:{selector}"
+        ]
+        summary_lines.extend(
+            f'{record["index"]}:{record["name"]} -> {_ttp_compact_text(record["prompt_after"], 160)}'
+            for record in records
+        )
+        return (next_tile_set, override_json, "\n".join(summary_lines))
+
+
+class TTP_Smart_Tile_Composite_Override_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        number_modes = ["keep", "set", "add", "max", "min"]
+        return {
+            "required": {
+                "tile_set": ("TTP_SMART_TILE_SET", {"forceInput": True}),
+                "selector_type": ([
+                    "all",
+                    "index",
+                    "name",
+                    "label",
+                    "prompt_tag",
+                    "source",
+                    "semantic_category",
+                    "semantic_role",
+                    "prompt_contains",
+                    "regex",
+                ], {"default": "index"}),
+                "selector": ("STRING", {"default": "T1", "multiline": False}),
+                "unmatched_mode": (["keep", "drop_unmatched"], {"default": "keep"}),
+                "composite_mode": (["keep", "replace_tile", "soft_overlay", "blend", "replace", "context"], {"default": "replace_tile"}),
+                "replace_tile_shape": (["keep", "mask_first", "tile_box_first"], {"default": "keep"}),
+                "layer_mode": (number_modes, {"default": "max"}),
+                "layer": ("FLOAT", {"default": 10.0, "min": -1000000.0, "max": 1000000.0, "step": 1.0}),
+                "priority_mode": (number_modes, {"default": "max"}),
+                "priority": ("FLOAT", {"default": 200.0, "min": -1000000.0, "max": 1000000.0, "step": 1.0}),
+                "occlusion_priority_mode": (number_modes, {"default": "max"}),
+                "occlusion_priority": ("FLOAT", {"default": 50000.0, "min": -1000000.0, "max": 1000000.0, "step": 10.0}),
+                "blend_mode": (number_modes, {"default": "keep"}),
+                "blend": ("INT", {"default": 32, "min": 0, "max": 2048, "step": 1}),
+                "importance_mode": (number_modes, {"default": "keep"}),
+                "importance": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.05}),
+            }
+        }
+
+    RETURN_TYPES = ("TTP_SMART_TILE_SET", "STRING", "STRING")
+    RETURN_NAMES = ("tile_set", "composite_json", "summary")
+    FUNCTION = "override_composite"
+    CATEGORY = "TTP/Smart Tile"
+
+    @staticmethod
+    def _apply_number_mode(current, mode, value):
+        mode = str(mode or "keep")
+        current = _ttp_safe_float(current, 0.0)
+        value = _ttp_safe_float(value, 0.0)
+        if mode == "keep":
+            return current
+        if mode == "set":
+            return value
+        if mode == "add":
+            return current + value
+        if mode == "max":
+            return max(current, value)
+        if mode == "min":
+            return min(current, value)
+        return current
+
+    @staticmethod
+    def _position_for_tile(tile):
+        return TTP_Smart_Tile_Prompt_Override_Experimental._position_for_tile(tile)
+
+    def override_composite(
+        self,
+        tile_set,
+        selector_type="index",
+        selector="T1",
+        unmatched_mode="keep",
+        composite_mode="replace_tile",
+        replace_tile_shape="keep",
+        layer_mode="max",
+        layer=10.0,
+        priority_mode="max",
+        priority=200.0,
+        occlusion_priority_mode="max",
+        occlusion_priority=50000.0,
+        blend_mode="keep",
+        blend=32,
+        importance_mode="keep",
+        importance=1.0,
+    ):
+        tile_images, _tile_meta, tiles_info = _ttp_validate_tile_set(tile_set)
+        next_tile_set = _ttp_clone_tile_set(tile_set)
+        next_tiles = next_tile_set["tile_meta"]["tiles"]
+        next_images = list(next_tile_set.get("tile_images", []))
+        next_positions = list(next_tile_set.get("positions", []))
+
+        kept_tiles = []
+        kept_images = []
+        kept_positions = []
+        records = []
+        matched_count = 0
+        drop_unmatched = str(unmatched_mode or "keep") == "drop_unmatched"
+        count = len(tiles_info)
+        composite_mode = str(composite_mode or "keep")
+        replace_tile_shape = str(replace_tile_shape or "keep")
+
+        for index, tile in enumerate(next_tiles):
+            matched = TTP_Smart_Tile_Prompt_Override_Experimental._match_tile(tile, index, count, selector_type, selector)
+            if not matched and drop_unmatched:
+                continue
+
+            updated = dict(tile)
+            if matched:
+                matched_count += 1
+                before = {
+                    "composite_mode": updated.get("composite_mode", updated.get("recommended_composite_mode", "")),
+                    "replace_tile_shape": updated.get("replace_tile_shape", ""),
+                    "layer": updated.get("layer", 0.0),
+                    "priority": updated.get("priority", 0.0),
+                    "occlusion_priority": updated.get("occlusion_priority", 0.0),
+                    "blend": updated.get("blend", 0),
+                    "importance": updated.get("importance", 1.0),
+                }
+                if composite_mode != "keep":
+                    updated["composite_mode"] = composite_mode
+                    updated["recommended_composite_mode"] = composite_mode
+                if replace_tile_shape != "keep":
+                    updated["replace_tile_shape"] = _ttp_normalize_replace_tile_shape(replace_tile_shape)
+                updated["layer"] = self._apply_number_mode(updated.get("layer", 0.0), layer_mode, layer)
+                updated["priority"] = self._apply_number_mode(updated.get("priority", 0.0), priority_mode, priority)
+                updated["occlusion_priority"] = self._apply_number_mode(updated.get("occlusion_priority", 0.0), occlusion_priority_mode, occlusion_priority)
+                updated["blend"] = max(0, int(round(self._apply_number_mode(updated.get("blend", 0), blend_mode, blend))))
+                updated["importance"] = max(0.0, self._apply_number_mode(updated.get("importance", 1.0), importance_mode, importance))
+                updated["composite_override"] = True
+                updated["composite_override_selector_type"] = str(selector_type or "")
+                updated["composite_override_selector"] = str(selector or "")
+                records.append({
+                    "index": int(index),
+                    "name": updated.get("name", f"tile_{index}"),
+                    "label": updated.get("label", ""),
+                    "before": before,
+                    "after": {
+                        "composite_mode": updated.get("composite_mode", ""),
+                        "replace_tile_shape": updated.get("replace_tile_shape", ""),
+                        "layer": updated.get("layer", 0.0),
+                        "priority": updated.get("priority", 0.0),
+                        "occlusion_priority": updated.get("occlusion_priority", 0.0),
+                        "blend": updated.get("blend", 0),
+                        "importance": updated.get("importance", 1.0),
+                    },
+                })
+
+            kept_tiles.append(updated)
+            kept_images.append(next_images[index] if index < len(next_images) else tile_images[index])
+            if index < len(next_positions):
+                kept_positions.append(next_positions[index])
+            else:
+                kept_positions.append(self._position_for_tile(updated))
+
+        if not kept_tiles:
+            raise ValueError("Smart Tile composite override kept no tiles. Change selector or unmatched_mode.")
+
+        for new_index, tile in enumerate(kept_tiles):
+            tile["id"] = new_index
+
+        next_tile_set["tile_meta"]["tiles"] = kept_tiles
+        next_tile_set["tile_images"] = kept_images
+        next_tile_set["positions"] = kept_positions
+
+        composite_json = json.dumps({
+            "type": "ttp_smart_tile_composite_override",
+            "selector_type": str(selector_type or ""),
+            "selector": str(selector or ""),
+            "unmatched_mode": str(unmatched_mode or "keep"),
+            "matched": int(matched_count),
+            "kept": int(len(kept_tiles)),
+            "dropped": int(count - len(kept_tiles)),
+            "tiles": records,
+        }, ensure_ascii=False, indent=2)
+        summary_lines = [
+            f"matched={matched_count} kept={len(kept_tiles)} dropped={count - len(kept_tiles)} selector={selector_type}:{selector}"
+        ]
+        summary_lines.extend(
+            f'{record["index"]}:{record["name"]} mode={record["after"]["composite_mode"]} shape={record["after"]["replace_tile_shape"] or "default"} layer={record["after"]["layer"]} occ={record["after"]["occlusion_priority"]}'
+            for record in records
+        )
+        return (next_tile_set, composite_json, "\n".join(summary_lines))
+
+
+class TTP_Smart_Tile_Stack_Order_Experimental:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "tile_set": ("TTP_SMART_TILE_SET", {"forceInput": True}),
+                "tile_order": ("STRING", {"default": "T1,T3,T2", "multiline": False}),
+                "top_order": (["first_on_top", "last_on_top"], {"default": "first_on_top"}),
+                "composite_mode": (["replace_tile", "keep"], {"default": "replace_tile"}),
+                "replace_tile_shape": (["keep", "mask_first", "tile_box_first"], {"default": "keep"}),
+            }
+        }
+
+    RETURN_TYPES = ("TTP_SMART_TILE_SET", "STRING", "STRING")
+    RETURN_NAMES = ("tile_set", "order_json", "summary")
+    FUNCTION = "apply_stack_order"
+    CATEGORY = "TTP/Smart Tile"
+
+    @staticmethod
+    def _position_for_tile(tile):
+        return TTP_Smart_Tile_Prompt_Override_Experimental._position_for_tile(tile)
+
+    def apply_stack_order(
+        self,
+        tile_set,
+        tile_order="T1,T3,T2",
+        top_order="first_on_top",
+        composite_mode="replace_tile",
+        replace_tile_shape="keep",
+    ):
+        tile_images, _tile_meta, tiles_info = _ttp_validate_tile_set(tile_set)
+        count = len(tiles_info)
+        ordered_indexes = TTP_Smart_Tile_Prompt_Override_Experimental._selector_index_order(tile_order, count)
+        if not ordered_indexes:
+            raise ValueError("Smart Tile stack order matched no tiles. Use indexes like T1,T3,T2.")
+
+        next_tile_set = _ttp_clone_tile_set(tile_set)
+        next_tiles = next_tile_set["tile_meta"]["tiles"]
+        next_images = list(next_tile_set.get("tile_images", []))
+        next_positions = list(next_tile_set.get("positions", []))
+
+        max_layer = max((_ttp_safe_float(tile.get("layer", 0.0), 0.0) for tile in next_tiles), default=0.0)
+        max_occlusion = max((_ttp_safe_float(tile.get("occlusion_priority", 0.0), 0.0) for tile in next_tiles), default=0.0)
+        step = 1000.0
+        first_on_top = str(top_order or "first_on_top") == "first_on_top"
+        composite_mode = str(composite_mode or "replace_tile")
+        replace_tile_shape = str(replace_tile_shape or "keep")
+        order_rank = {}
+        order_position = {}
+        ordered_count = len(ordered_indexes)
+        for rank, index in enumerate(ordered_indexes):
+            stack_rank = ordered_count - rank if first_on_top else rank + 1
+            order_rank[index] = stack_rank
+            order_position[index] = rank
+
+        records = []
+        for index, tile in enumerate(next_tiles):
+            if index not in order_rank:
+                continue
+            stack_rank = order_rank[index]
+            before = {
+                "layer": tile.get("layer", 0.0),
+                "occlusion_priority": tile.get("occlusion_priority", 0.0),
+                "composite_mode": tile.get("composite_mode", tile.get("recommended_composite_mode", "")),
+                "replace_tile_shape": tile.get("replace_tile_shape", ""),
+            }
+            tile["layer"] = max_layer + float(stack_rank)
+            tile["occlusion_priority"] = max_occlusion + float(stack_rank) * step
+            if composite_mode != "keep":
+                tile["composite_mode"] = composite_mode
+                tile["recommended_composite_mode"] = composite_mode
+            if replace_tile_shape != "keep":
+                tile["replace_tile_shape"] = _ttp_normalize_replace_tile_shape(replace_tile_shape)
+            tile["stack_order_override"] = True
+            tile["stack_order_selector"] = str(tile_order or "")
+            tile["stack_order_position"] = int(ordered_indexes.index(index) + 1)
+            tile["stack_order_top_rank"] = float(stack_rank)
+            records.append({
+                "index": int(index),
+                "selector": f"T{index + 1}",
+                "name": tile.get("name", f"tile_{index}"),
+                "before": before,
+                "after": {
+                    "layer": tile.get("layer", 0.0),
+                    "occlusion_priority": tile.get("occlusion_priority", 0.0),
+                    "composite_mode": tile.get("composite_mode", tile.get("recommended_composite_mode", "")),
+                    "replace_tile_shape": tile.get("replace_tile_shape", ""),
+                    "top_rank": float(stack_rank),
+                },
+            })
+        records.sort(key=lambda record: order_position.get(int(record["index"]), count))
+
+        if len(next_positions) < len(next_tiles):
+            next_tile_set["positions"] = [
+                next_positions[index] if index < len(next_positions) else self._position_for_tile(tile)
+                for index, tile in enumerate(next_tiles)
+            ]
+        else:
+            next_tile_set["positions"] = next_positions
+        next_tile_set["tile_images"] = next_images if next_images else list(tile_images)
+
+        order_json = json.dumps({
+            "type": "ttp_smart_tile_stack_order",
+            "tile_order": str(tile_order or ""),
+            "top_order": str(top_order or "first_on_top"),
+            "composite_mode": composite_mode,
+            "replace_tile_shape": replace_tile_shape,
+            "matched": int(len(records)),
+            "tiles": records,
+        }, ensure_ascii=False, indent=2)
+        summary_lines = [
+            f"matched={len(records)} order={tile_order} top_order={top_order} mode={composite_mode}"
+        ]
+        summary_lines.extend(
+            f'{record["selector"]}:{record["name"]} layer={record["after"]["layer"]} occ={record["after"]["occlusion_priority"]}'
+            for record in records
+        )
+        return (next_tile_set, order_json, "\n".join(summary_lines))
 
 
 class TTP_Smart_Tile_Loop_Source_Experimental:
@@ -4579,7 +5227,8 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 "base_canvas_mode": (["auto", "black", "base_image", "source_image"], {"default": "auto"}),
                 "weight_preview_mode": (["raw_weight", "coverage"], {"default": "raw_weight"}),
                 "small_tile_on_top": ("BOOLEAN", {"default": False}),
-                "auto_composite_policy": (["safe_auto", "strict_layer", "soft_detail", "replace_object"], {"default": "safe_auto"}),
+                "auto_composite_policy": (["safe_auto", "strict_layer", "soft_detail", "replace_object", "replace_tile"], {"default": "safe_auto"}),
+                "replace_tile_shape": (["mask_first", "tile_box_first"], {"default": "mask_first"}),
             },
             "optional": {
                 "sampled_tiles": ("IMAGE",),
@@ -4620,6 +5269,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
         weight_preview_mode="raw_weight",
         small_tile_on_top=False,
         auto_composite_policy="safe_auto",
+        replace_tile_shape="mask_first",
         sampled_tiles=None,
         tile_meta=None,
         tile_set=None,
@@ -4737,6 +5387,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 "weight_preview_mode": preview_mode,
                 "small_tile_on_top": _ttp_safe_bool(small_tile_on_top, False),
                 "auto_composite_policy": str(auto_composite_policy or "safe_auto"),
+                "replace_tile_shape": str(replace_tile_shape or "mask_first"),
                 "mask_blend_mode": str(mask_blend_mode),
                 "large_tile_policy": str(large_tile_policy),
             },
@@ -4767,10 +5418,15 @@ class TTP_Smart_Tile_Assemble_Experimental:
 
         small_tile_on_top = _ttp_safe_bool(small_tile_on_top, False)
         composite_policy = str(auto_composite_policy or "safe_auto")
-        if composite_policy not in ("safe_auto", "strict_layer", "soft_detail", "replace_object"):
+        if composite_policy not in ("safe_auto", "strict_layer", "soft_detail", "replace_object", "replace_tile"):
             composite_policy = "safe_auto"
-        auto_policy_ranking = composite_policy in ("safe_auto", "soft_detail", "replace_object")
-        destructive_occlusion = composite_policy in ("strict_layer", "replace_object")
+        replace_tile_shape_default = _ttp_normalize_replace_tile_shape(replace_tile_shape)
+        auto_policy_ranking = composite_policy in ("safe_auto", "soft_detail", "replace_object", "replace_tile")
+        destructive_occlusion = composite_policy in ("strict_layer", "replace_object", "replace_tile")
+        replace_tile_policy_active = composite_policy == "replace_tile" or any(
+            _ttp_is_replace_tile_mode(_ttp_tile_composite_mode(tile))
+            for tile in tiles_info
+        )
         auto_policy_candidates = auto_policy_ranking and any(
             not _ttp_is_context_tile_text(_ttp_tile_search_text(tile)) and (
                 _ttp_is_detail_tile_text(_ttp_tile_search_text(tile))
@@ -4780,7 +5436,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
             )
             for tile in tiles_info
         )
-        use_occlusion = small_tile_on_top or auto_policy_candidates or any(
+        use_occlusion = replace_tile_policy_active or small_tile_on_top or auto_policy_candidates or any(
             float(tile.get("occlusion_priority", 0.0)) != 0.0 or int(tile.get("layer", 0)) != 0
             for tile in tiles_info
         )
@@ -4856,6 +5512,9 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 tile_area_ratio,
                 large_tile_area_threshold,
             )
+            tile_mode = _ttp_tile_composite_mode(tile)
+            replace_tile_mode = composite_policy == "replace_tile" or _ttp_is_replace_tile_mode(tile_mode)
+            tile_replace_shape = _ttp_tile_replace_shape(tile, replace_tile_shape_default)
             low_resolution_large_tile = (
                 has_base_canvas
                 and is_large_tile
@@ -4909,8 +5568,24 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 1.0,
                 1.0,
             )
-            object_mask = _ttp_tile_object_mask_array(tile, out_w, out_h, str(mask_blend_mode), blend)
-            if object_mask is not None:
+            mask_mode = "mask_feather" if replace_tile_mode else str(mask_blend_mode)
+            object_mask = _ttp_tile_object_mask_array(
+                tile,
+                out_w,
+                out_h,
+                mask_mode,
+                blend,
+                hard_stitch=replace_tile_mode and tile_replace_shape != "tile_box_first",
+                prefer_own_mask=replace_tile_mode,
+            )
+            if replace_tile_mode:
+                if tile_replace_shape == "tile_box_first":
+                    mask = _ttp_rect_feather_mask(out_w, out_h, blend)
+                elif object_mask is not None:
+                    mask = object_mask
+                else:
+                    mask = _ttp_rect_feather_mask(out_w, out_h, blend)
+            elif object_mask is not None:
                 if soft_detail_overlay and str(mask_blend_mode) in ("auto", "mask_feather", "mask_only"):
                     blur_px = max(1.0, min(8.0, max(float(blend) * 0.08, min(out_w, out_h) * 0.012)))
                     object_halo = _ttp_soften_detail_mask_array(
@@ -4928,7 +5603,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                     mask = mask * object_mask
             elif _ttp_should_rect_feather_tile(tile, is_large_tile, str(mask_blend_mode)):
                 mask = mask * _ttp_rect_feather_mask(out_w, out_h, blend)
-            tile_destructive_occlusion = destructive_occlusion or (
+            tile_destructive_occlusion = replace_tile_mode or destructive_occlusion or (
                 composite_policy == "safe_auto"
                 and object_mask is not None
                 and not soft_detail_overlay
@@ -4947,6 +5622,9 @@ class TTP_Smart_Tile_Assemble_Experimental:
             rank_occlusion = float(tile.get("occlusion_priority", 0.0))
             rank_layer = float(tile.get("layer", 0.0))
             rank_priority = priority
+            rank_tiebreaker = (float(index) + 1.0) * 0.001 if replace_tile_mode else 0.0
+            if replace_tile_mode:
+                rank_occlusion = max(rank_occlusion, 1.0)
             if auto_policy_ranking and not is_large_tile:
                 text = _ttp_tile_search_text(tile)
                 if _ttp_is_detail_tile_text(text) or soft_detail_overlay:
@@ -4961,7 +5639,9 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 rank_layer = max(rank_layer, 1.0)
             if soft_detail_overlay:
                 mask = mask * (1.0 + coverage_mask * coverage_mask)
-            if is_large_tile and large_tile_policy == "context_only" and has_base_canvas:
+            if replace_tile_mode:
+                pass
+            elif is_large_tile and large_tile_policy == "context_only" and has_base_canvas:
                 mask = mask * context_tile_weight
                 rank_occlusion = min(rank_occlusion, 0.0)
                 rank_layer = min(rank_layer, 0.0)
@@ -5081,7 +5761,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 mask_t = torch.as_tensor(mask, dtype=torch.float32, device=assemble_torch_device)
                 clear_t = torch.as_tensor(clear_mask, dtype=torch.float32, device=assemble_torch_device)
                 if use_occlusion:
-                    rank = rank_occlusion * 1000000.0 + rank_layer * 10000.0 + (rank_priority if use_priority else 0.0)
+                    rank = rank_occlusion * 1000000.0 + rank_layer * 10000.0 + (rank_priority if use_priority else 0.0) + rank_tiebreaker
                     rank_view = priority_ranks[paste_y:y_end, paste_x:x_end]
                     mask_active = coverage_t > 1e-6
                     higher = (rank > rank_view + 1e-6) & mask_active
@@ -5110,7 +5790,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                     weights[paste_y:y_end, paste_x:x_end].add_(mask_t)
                     preview_weights[paste_y:y_end, paste_x:x_end].add_(coverage_t)
             elif use_occlusion:
-                rank = rank_occlusion * 1000000.0 + rank_layer * 10000.0 + (rank_priority if use_priority else 0.0)
+                rank = rank_occlusion * 1000000.0 + rank_layer * 10000.0 + (rank_priority if use_priority else 0.0) + rank_tiebreaker
                 rank_view = priority_ranks[paste_y:y_end, paste_x:x_end]
                 mask_active = coverage_mask > 1e-6
                 higher = (rank > rank_view + 1e-6) & mask_active
@@ -6092,6 +6772,9 @@ NODE_CLASS_MAPPINGS = {
     "TTP_Smart_Tile_Set_Preview_Experimental": TTP_Smart_Tile_Set_Preview_Experimental,
     "TTP_QwenVL3_Local_Loader_Experimental": TTP_QwenVL3_Local_Loader_Experimental,
     "TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental": TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental,
+    "TTP_Smart_Tile_Prompt_Override_Experimental": TTP_Smart_Tile_Prompt_Override_Experimental,
+    "TTP_Smart_Tile_Composite_Override_Experimental": TTP_Smart_Tile_Composite_Override_Experimental,
+    "TTP_Smart_Tile_Stack_Order_Experimental": TTP_Smart_Tile_Stack_Order_Experimental,
     "TTP_Smart_Tile_Loop_Source_Experimental": TTP_Smart_Tile_Loop_Source_Experimental,
     "TTP_Smart_Tile_Loop_Collect_Experimental": TTP_Smart_Tile_Loop_Collect_Experimental,
     "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": TTP_Smart_Tile_Image_Upscale_Prep_Experimental,
@@ -6117,6 +6800,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "TTP_Smart_Tile_Set_Preview_Experimental": "TTP Smart Tile Set Preview",
     "TTP_QwenVL3_Local_Loader_Experimental": "TTP QwenVL3 Local Loader",
     "TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental": "TTP Smart Tile QwenVL Prompt Set Builder",
+    "TTP_Smart_Tile_Prompt_Override_Experimental": "TTP Smart Tile Prompt Override",
+    "TTP_Smart_Tile_Composite_Override_Experimental": "TTP Smart Tile Composite Override",
+    "TTP_Smart_Tile_Stack_Order_Experimental": "TTP Smart Tile Stack Order",
     "TTP_Smart_Tile_Loop_Source_Experimental": "TTP Smart Tile Loop Source",
     "TTP_Smart_Tile_Loop_Collect_Experimental": "TTP Smart Tile Loop Collect",
     "TTP_Smart_Tile_Image_Upscale_Prep_Experimental": "TTP Smart Tile Image Upscale Prep",

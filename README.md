@@ -40,10 +40,15 @@ Useful editor actions:
 
 - `Replace grid`: replace the whole layout with an even grid.
 - `Grid in T#`: subdivide the selected tile without rebuilding the whole layout.
+- `Show masks` / `Hide masks`: toggle a colored overlay for tile object masks in the editor.
+- `Stitch mask` / `Raw masks`: preview the hardened and feathered replace-paste mask shape without changing saved masks.
 - `Mask to Tile`: turn painted regions into object tiles.
+- `Merge masks`: Shift/Cmd/Ctrl-select multiple tiles, then union their cropped object masks back onto the selected tiles.
+- `Merge tiles`: Shift/Cmd/Ctrl-select multiple tiles, then replace them with one larger tile; existing masks are unioned into the merged tile when available.
 - `Refresh masks`: after manually moving sub-tiles from a masked tile, re-crop the inherited masks to the current tile boxes.
 - `Fill gaps`: add background tiles for uncovered areas.
 - `Auto Tile`: run SAM3.1 or QwenVL3 detection and write the detected layout back into the editor.
+- `Auto SAM`: run SAM3.1 detection and keep only detected object tiles without automatic gap filling.
 
 When subdividing a masked tile with `Grid in`, the Mask mode can crop the original object mask into child tiles or skip empty mask children. The child tiles keep a parent mask source, so `Refresh masks` can update them after manual edits.
 
@@ -55,6 +60,9 @@ When subdividing a masked tile with `Grid in`, the Mask mode can crop the origin
 | `TTP Smart Tile Set Preview` | Preview a tile set as a contact sheet or one selected tile. |
 | `TTP QwenVL3 Local Loader` | Load a local QwenVL tagging model from `ComfyUI/models/text_encoders`. |
 | `TTP Smart Tile QwenVL Prompt Set Builder` | Generate per-tile prompts before loop processing. |
+| `TTP Smart Tile Prompt Override` | Filter selected tiles and replace, prepend, append, or find/replace per-tile prompts before sampling. |
+| `TTP Smart Tile Composite Override` | Filter selected tiles and set composite mode, replace shape, layer, priority, occlusion priority, blend, and importance before assembly. |
+| `TTP Smart Tile Stack Order` | Put tiles such as `T1,T3,T2` at the front in that order, leaving all unlisted tiles behind. |
 | `TTP Smart Tile Semantic Rank` | Classify tiles and write recommended layer, priority, scale weight, and composite metadata. |
 | `TTP Smart Tile Loop Source` | Output one tile at a time for VAE Encode / sampler / VAE Decode. |
 | `TTP Smart Tile Loop Collect` | Collect each processed tile back into the same tile set. |
@@ -68,11 +76,14 @@ When subdividing a masked tile with `Grid in`, the Mask mode can crop the origin
 ```text
 TTP Smart Tile Interactive Crop
   -> TTP Smart Tile QwenVL Prompt Set Builder (optional)
+  -> TTP Smart Tile Prompt Override (optional)
+  -> TTP Smart Tile Composite Override (optional)
   -> TTP Smart Tile Semantic Rank (optional)
   -> TTP Smart Tile Loop Source
   -> VAE Encode / Sampler / VAE Decode
   -> TTP Smart Tile Loop Collect
   -> TTP Smart Tile Semantic Rank (optional final refresh)
+  -> TTP Smart Tile Stack Order (optional final manual order)
   -> TTP Smart Tile Output Size Estimate (optional)
   -> TTP Smart Tile Assemble
   -> TTP Smart Tile Save Final Image
@@ -111,9 +122,12 @@ This workflow is the recommended full Smart Tile loop. It uses `TTP Smart Tile I
 
 | Node / 节点 | Example setting / 示例设置 | Notes / 说明 |
 |---|---|---|
-| `Interactive Crop` | `auto_detect_mode=sam3.1`, `default_pad=32`, `default_blend=32`, `auto_object_padding=64`, `auto_max_tiles=16` | Use `Auto Tile` to create an object-aware layout, then set `auto_detect_mode=none` if you want to freeze manual edits. / 用 `Auto Tile` 生成语义分块；如果之后要固定手动编辑结果，可以把 `auto_detect_mode` 改回 `none`。 |
+| `Interactive Crop` | `auto_detect_mode=sam3.1`, `default_pad=32`, `default_blend=32`, `auto_object_padding=64`, `auto_mask_expand=16`, `auto_max_tiles=16` | Use `Auto Tile` to create an object-aware layout, then set `auto_detect_mode=none` if you want to freeze manual edits. `auto_mask_expand` dilates object masks for edit pasteback; set it to `0` for exact masks. / 用 `Auto Tile` 生成语义分块；如果之后要固定手动编辑结果，可以把 `auto_detect_mode` 改回 `none`。`auto_mask_expand` 会膨胀对象蒙版，适合 edit 贴回；设为 `0` 则保留精确蒙版。 |
 | `QwenVL3 Local Loader` | `qwen3vl_4b_fp8_scaled.safetensors` | Replace this with the QwenVL model installed in `ComfyUI/models/text_encoders`. / 按你本机 `models/text_encoders` 里的 QwenVL 模型替换。 |
 | `QwenVL Prompt Set Builder` | `reference_image_mode=first_message`, `prompt_preset=tile_img2img_prompt`, `output_language=chinese` | Builds prompts before the tile loop, then `Loop Source.prompt` feeds the text encoder. / 在循环前一次性生成每块提示词，然后由 `Loop Source.prompt` 送入文本编码。 |
+| `Prompt Override` | `selector_type=label`, `selector=face`, `prompt_mode=replace` | Rewrites only matched tile prompts. Use `drop_unmatched` when only selected regions should run through an edit sampler and Assemble should keep the rest from `source_image`. / 只改写匹配 tile 的提示词；局部 edit 时可用 `drop_unmatched`，其余区域由 Assemble 的 `source_image` 底图保留。 |
+| `Composite Override` | `selector_type=index`, `selector=T3`, `composite_mode=replace_tile`, `replace_tile_shape=mask_first`, `occlusion_priority_mode=max` | Puts selected tiles above lower layers and makes them hard-replace the canvas. `mask_first` uses an object mask when present and hardens the mask interior like an inpaint stitch; `tile_box_first` ignores the mask and replaces the full tile box. / 把指定 tile 放到更高层并硬替换画布；`mask_first` 有 mask 就按 mask 替换，并像 inpaint stitch 一样硬化 mask 主体；`tile_box_first` 即使有 mask 也按完整 tile 方块替换。 |
+| `Stack Order` | `tile_order=T1,T3,T2`, `top_order=first_on_top`, `composite_mode=replace_tile` | Makes the listed tiles the front stack in the typed order while all unlisted tiles stay behind. Place it after the final `Semantic Rank` so manual order wins. The tiles keep their own `blend` and mask feathering. / 按填写顺序把这些 tile 放到最前面，未填写的 tile 都在后面；建议放在最终 `Semantic Rank` 后面，让手动顺序最后生效；tile 仍使用各自的 `blend` 和 mask 羽化。 |
 | `Image Upscale Prep` | `scale=2.5`, `round_to=8`, `max_megapixels=1.5`, `use_upscale_model=true` | Enlarges each tile before img2img while keeping each tile under the megapixel cap. / 采样前放大每块 tile，同时用百万像素上限控制显存。 |
 | `Loop Source` / `Loop Collect` | `Process All Tiles` workflow | The tile count can be 4, 8, 16, or any layout count; no manual sampler duplication is needed. / 分块数量可以变化，不需要手动复制多套 sampler。 |
 | `Output Size Estimate` | `focus_weighted` | Estimates the final canvas from processed tile sizes, giving more influence to focus/detail tiles. / 根据处理后的 tile 尺寸估算最终画布，并更重视细节块。 |
@@ -172,6 +186,8 @@ Assembly options worth starting with:
 | `assemble_device` | `auto` or `gpu` | Uses GPU paste/weight accumulation when available. |
 | `base_canvas_mode` | `black` when you do not want source pixels underneath | Prevents the original image from showing through uncovered or low-weight areas. |
 | `auto_composite_policy` | `safe_auto` | Keeps background/context low and promotes focus/detail tiles. |
+| `auto_composite_policy` | `replace_tile` | For edit workflows, hard-replaces selected tile regions over the base canvas. Combine with `replace_tile_shape=mask_first` for mask priority, or `tile_box_first` for full tile-box replacement. |
+| `replace_tile_shape` | `mask_first` or `tile_box_first` | Controls replace-tile shape priority. `mask_first` uses object masks when available and hardens soft mask interiors so only the edge blends; `tile_box_first` ignores masks and pastes the full tile box. |
 | `small_tile_on_top` | `true` for detail workflows | Helps small face/eye/text tiles win overlaps against larger body/context tiles. |
 | `mask_blend_mode` | `auto` or `mask_feather` | Uses object masks when present and feathered rectangular masks otherwise. |
 | `color_correction` | `off` first, then `reinhard_lab`, `mkl_lab`, or `histogram` as needed | Uses ComfyUI's official Transfer Color logic; reference defaults to the source image. |

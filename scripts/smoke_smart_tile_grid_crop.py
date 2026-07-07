@@ -153,6 +153,7 @@ assert_equal("auto_detect_request" in required_inputs, True, "interactive crop s
 assert_equal("auto_prompt" in required_inputs, True, "interactive crop should expose a visual prompt")
 assert_equal("allow_object_overlap" in required_inputs, True, "interactive crop should expose object overlap control")
 assert_equal("auto_object_padding" in required_inputs, True, "interactive crop should expose object padding control")
+assert_equal("auto_mask_expand" in required_inputs, True, "interactive crop should expose auto mask expansion control")
 assert_equal("auto_max_tiles" in required_inputs, True, "interactive crop should expose auto max tiles control")
 assert_equal("auto_paint_mask" in required_inputs, True, "interactive crop should expose hidden painted mask input")
 assert_equal("vision_model" in optional_inputs, True, "interactive crop should expose a vision model input")
@@ -184,6 +185,7 @@ expected_assemble_required_order = [
     "weight_preview_mode",
     "small_tile_on_top",
     "auto_composite_policy",
+    "replace_tile_shape",
 ]
 assert_equal(
     list(assemble_inputs["required"].keys()),
@@ -207,8 +209,10 @@ assert_equal(assemble_inputs["required"]["base_canvas_mode"][0], ["auto", "black
 assert_equal(assemble_inputs["required"]["weight_preview_mode"][0], ["raw_weight", "coverage"], "assemble should expose raw weight and coverage preview modes")
 assert_equal(assemble_inputs["required"]["weight_preview_mode"][1]["default"], "raw_weight", "assemble should keep raw overlap weight preview as the default")
 assert_equal("small_tile_on_top" in assemble_inputs["required"], True, "assemble should expose small tile top stacking")
-assert_equal(assemble_inputs["required"]["auto_composite_policy"][0], ["safe_auto", "strict_layer", "soft_detail", "replace_object"], "assemble should expose automatic compositing policy")
+assert_equal(assemble_inputs["required"]["auto_composite_policy"][0], ["safe_auto", "strict_layer", "soft_detail", "replace_object", "replace_tile"], "assemble should expose automatic compositing policy")
 assert_equal(assemble_inputs["required"]["auto_composite_policy"][1]["default"], "safe_auto", "assemble should default to safe auto compositing")
+assert_equal(assemble_inputs["required"]["replace_tile_shape"][0], ["mask_first", "tile_box_first"], "assemble should expose replace tile shape priority")
+assert_equal(assemble_inputs["required"]["replace_tile_shape"][1]["default"], "mask_first", "assemble should default replace tile to mask priority")
 assert_equal(assemble_inputs["optional"]["done"][0], "BOOLEAN", "assemble should accept loop done gate")
 preview_inputs = ttp.TTP_Smart_Tile_Set_Preview_Experimental.INPUT_TYPES()
 assert_equal(preview_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "tile set preview should accept Smart Tile Set")
@@ -257,6 +261,160 @@ assert_equal(
     ttp.TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental,
     "prompt builder should be registered",
 )
+prompt_override_inputs = ttp.TTP_Smart_Tile_Prompt_Override_Experimental.INPUT_TYPES()
+assert_equal(prompt_override_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "prompt override should accept Smart Tile Set")
+assert_equal(prompt_override_inputs["required"]["tile_set"][1].get("forceInput"), True, "prompt override tile_set should be a forceInput connection")
+assert_equal("regex" in prompt_override_inputs["required"]["selector_type"][0], True, "prompt override should support regex selectors")
+assert_equal(prompt_override_inputs["required"]["unmatched_mode"][0], ["keep", "drop_unmatched"], "prompt override should allow dropping unmatched tiles")
+assert_equal(prompt_override_inputs["required"]["prompt_text"][1]["dynamicPrompts"], False, "prompt override text should not use dynamic prompt parsing")
+assert_equal(
+    ttp.NODE_CLASS_MAPPINGS["TTP_Smart_Tile_Prompt_Override_Experimental"],
+    ttp.TTP_Smart_Tile_Prompt_Override_Experimental,
+    "prompt override should be registered",
+)
+
+override_tile_set = {
+    "version": 1,
+    "type": "ttp_smart_tile_set",
+    "original_size": [100, 100],
+    "tile_meta": {
+        "version": 3,
+        "type": "ttp_smart_tile",
+        "storage": "tile_set",
+        "original_size": [100, 100],
+        "tiles": [
+            {
+                "id": 0,
+                "name": "tile_1",
+                "label": "face",
+                "source": "paint_mask",
+                "core_box": [0, 0, 50, 50],
+                "sample_box": [0, 0, 50, 50],
+                "paste_box": [0, 0, 50, 50],
+                "prompt": "old face prompt",
+                "negative": "old face negative",
+            },
+            {
+                "id": 1,
+                "name": "tile_2",
+                "label": "background",
+                "source": "manual",
+                "core_box": [50, 0, 50, 50],
+                "sample_box": [50, 0, 50, 50],
+                "paste_box": [50, 0, 50, 50],
+                "prompt": "old background prompt",
+                "negative": "old background negative",
+            },
+        ],
+    },
+    "tile_images": ["face_image", "background_image"],
+    "positions": [(0, 0, 50, 50), (50, 0, 100, 50)],
+}
+override_node = ttp.TTP_Smart_Tile_Prompt_Override_Experimental()
+overridden_set, override_json, override_summary = override_node.override_prompts(
+    override_tile_set,
+    selector_type="label",
+    selector="face",
+    unmatched_mode="keep",
+    prompt_mode="replace",
+    prompt_text="edit only the face",
+    negative_mode="append",
+    negative_text="avoid changing identity",
+)
+assert_equal(overridden_set["tile_meta"]["tiles"][0]["prompt"], "edit only the face", "prompt override should replace matched tile prompt")
+assert_equal(overridden_set["tile_meta"]["tiles"][0]["negative"], "old face negative\navoid changing identity", "prompt override should append matched tile negative")
+assert_equal(overridden_set["tile_meta"]["tiles"][1]["prompt"], "old background prompt", "prompt override should keep unmatched tile prompt")
+assert_equal(json.loads(override_json)["matched"], 1, "prompt override JSON should report matched tile count")
+assert_equal("matched=1" in override_summary, True, "prompt override summary should report matched count")
+dropped_set, _dropped_json, _dropped_summary = override_node.override_prompts(
+    override_tile_set,
+    selector_type="label",
+    selector="face",
+    unmatched_mode="drop_unmatched",
+    prompt_mode="replace",
+    prompt_text="edit only the face",
+)
+assert_equal(len(dropped_set["tile_meta"]["tiles"]), 1, "prompt override should drop unmatched tile metadata")
+assert_equal(len(dropped_set["tile_images"]), 1, "prompt override should drop unmatched tile images")
+assert_equal(dropped_set["tile_meta"]["tiles"][0]["id"], 0, "prompt override should reindex kept tile ids")
+composite_override_inputs = ttp.TTP_Smart_Tile_Composite_Override_Experimental.INPUT_TYPES()
+assert_equal(composite_override_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "composite override should accept Smart Tile Set")
+assert_equal(composite_override_inputs["required"]["tile_set"][1].get("forceInput"), True, "composite override tile_set should be a forceInput connection")
+assert_equal("replace_tile" in composite_override_inputs["required"]["composite_mode"][0], True, "composite override should expose replace_tile mode")
+assert_equal(composite_override_inputs["required"]["replace_tile_shape"][0], ["keep", "mask_first", "tile_box_first"], "composite override should expose replace tile shape priority")
+assert_equal(composite_override_inputs["required"]["selector_type"][0], prompt_override_inputs["required"]["selector_type"][0], "composite override selectors should match prompt override selectors")
+assert_equal(
+    ttp.NODE_CLASS_MAPPINGS["TTP_Smart_Tile_Composite_Override_Experimental"],
+    ttp.TTP_Smart_Tile_Composite_Override_Experimental,
+    "composite override should be registered",
+)
+composite_node = ttp.TTP_Smart_Tile_Composite_Override_Experimental()
+composited_set, composite_json, composite_summary = composite_node.override_composite(
+    override_tile_set,
+    selector_type="label",
+    selector="face",
+    composite_mode="replace_tile",
+    replace_tile_shape="tile_box_first",
+    layer_mode="max",
+    layer=12,
+    priority_mode="max",
+    priority=220,
+    occlusion_priority_mode="max",
+    occlusion_priority=60000,
+    blend_mode="set",
+    blend=24,
+)
+composited_tile = composited_set["tile_meta"]["tiles"][0]
+assert_equal(composited_tile["composite_mode"], "replace_tile", "composite override should set replace_tile mode")
+assert_equal(composited_tile["recommended_composite_mode"], "replace_tile", "composite override should update recommended composite mode")
+assert_equal(composited_tile["replace_tile_shape"], "tile_box_first", "composite override should set replace tile shape priority")
+assert_equal(composited_tile["layer"], 12, "composite override should raise the selected tile layer")
+assert_equal(composited_tile["priority"], 220, "composite override should raise the selected tile priority")
+assert_equal(composited_tile["occlusion_priority"], 60000, "composite override should raise the selected tile occlusion priority")
+assert_equal(composited_tile["blend"], 24, "composite override should set selected tile blend")
+assert_equal(json.loads(composite_json)["matched"], 1, "composite override JSON should report matched tile count")
+assert_equal("matched=1" in composite_summary, True, "composite override summary should report matched count")
+stack_order_inputs = ttp.TTP_Smart_Tile_Stack_Order_Experimental.INPUT_TYPES()
+assert_equal(stack_order_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "stack order should accept Smart Tile Set")
+assert_equal(stack_order_inputs["required"]["tile_set"][1].get("forceInput"), True, "stack order tile_set should be a forceInput connection")
+assert_equal(stack_order_inputs["required"]["top_order"][0], ["first_on_top", "last_on_top"], "stack order should expose top order direction")
+assert_equal(stack_order_inputs["required"]["composite_mode"][1]["default"], "replace_tile", "stack order should default to replace-tile compositing")
+assert_equal(
+    ttp.NODE_CLASS_MAPPINGS["TTP_Smart_Tile_Stack_Order_Experimental"],
+    ttp.TTP_Smart_Tile_Stack_Order_Experimental,
+    "stack order should be registered",
+)
+stack_order_tile_set = {
+    "version": 1,
+    "type": "ttp_smart_tile_set",
+    "original_size": [100, 100],
+    "tile_meta": {
+        "version": 3,
+        "type": "ttp_smart_tile",
+        "storage": "tile_set",
+        "original_size": [100, 100],
+        "tiles": [
+            {"id": 0, "name": "tile_1", "core_box": [0, 0, 50, 50], "sample_box": [0, 0, 50, 50], "layer": 0, "occlusion_priority": 0},
+            {"id": 1, "name": "tile_2", "core_box": [0, 0, 50, 50], "sample_box": [0, 0, 50, 50], "layer": 0, "occlusion_priority": 0},
+            {"id": 2, "name": "tile_3", "core_box": [0, 0, 50, 50], "sample_box": [0, 0, 50, 50], "layer": 0, "occlusion_priority": 0},
+            {"id": 3, "name": "tile_4", "core_box": [0, 0, 50, 50], "sample_box": [0, 0, 50, 50], "layer": 1, "occlusion_priority": 80000},
+        ],
+    },
+    "tile_images": ["tile_1", "tile_2", "tile_3", "tile_4"],
+}
+stack_node = ttp.TTP_Smart_Tile_Stack_Order_Experimental()
+stacked_set, stack_json, stack_summary = stack_node.apply_stack_order(
+    stack_order_tile_set,
+    tile_order="T1，T3，T2",
+)
+stacked_tiles = stacked_set["tile_meta"]["tiles"]
+assert_equal(stacked_tiles[0]["occlusion_priority"] > stacked_tiles[2]["occlusion_priority"], True, "stack order should make the first listed tile topmost by default")
+assert_equal(stacked_tiles[2]["occlusion_priority"] > stacked_tiles[1]["occlusion_priority"], True, "stack order should preserve listed ordering between selected tiles")
+assert_equal(stacked_tiles[1]["occlusion_priority"] > stacked_tiles[3]["occlusion_priority"], True, "stack order should place listed tiles above unlisted tiles")
+assert_equal(stacked_tiles[0]["composite_mode"], "replace_tile", "stack order should default selected tiles to replace_tile mode")
+assert_equal("composite_mode" in stacked_tiles[3], False, "stack order should not change unlisted tile composite mode")
+assert_equal(json.loads(stack_json)["tiles"][1]["selector"], "T3", "stack order JSON should preserve selector order")
+assert_equal("T1" in stack_summary and "T3" in stack_summary and "T2" in stack_summary, True, "stack order summary should include selected tiles")
 loop_source_inputs = ttp.TTP_Smart_Tile_Loop_Source_Experimental.INPUT_TYPES()
 assert_equal(loop_source_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "loop source should accept Smart Tile Set")
 assert_equal(loop_source_inputs["optional"]["clip"][0], "CLIP", "loop source should optionally encode tile prompts with CLIP")
@@ -1145,6 +1303,37 @@ mask_array = ttp._ttp_tile_object_mask_array(masked_auto_meta[0], masked_auto_me
 assert_equal(mask_array.shape[2], 1, "decoded object mask should be a single-channel weight map")
 assert_equal(float(mask_array.max()) > 0.5, True, "decoded object mask should keep foreground weight")
 
+small_expand_mask = Image.new("L", (32, 32), 0)
+for x in range(10, 14):
+    for y in range(10, 14):
+        small_expand_mask.putpixel((x, y), 255)
+small_mask_layout = ttp._ttp_boxes_to_auto_layout(
+    [{"x": 10, "y": 10, "width": 4, "height": 4, "label": "eye", "score": 0.9}],
+    32,
+    32,
+    object_padding=4,
+    mask_expand=0,
+    max_tiles=1,
+    include_background=False,
+    masks=[small_expand_mask],
+)
+expanded_mask_layout = ttp._ttp_boxes_to_auto_layout(
+    [{"x": 10, "y": 10, "width": 4, "height": 4, "label": "eye", "score": 0.9}],
+    32,
+    32,
+    object_padding=4,
+    mask_expand=2,
+    max_tiles=1,
+    include_background=False,
+    masks=[small_expand_mask],
+)
+small_mask_tile = ttp._ttp_parse_smart_tile_layout(small_mask_layout, 32, 32)[0]
+expanded_mask_tile = ttp._ttp_parse_smart_tile_layout(expanded_mask_layout, 32, 32)[0]
+small_mask_pixels = np.count_nonzero(np.array(ttp._ttp_decode_object_mask_data(small_mask_tile["object_mask"])) > 0)
+expanded_mask_pixels = np.count_nonzero(np.array(ttp._ttp_decode_object_mask_data(expanded_mask_tile["object_mask"])) > 0)
+assert_equal(expanded_mask_pixels > small_mask_pixels, True, "auto mask expand should dilate object mask foreground pixels")
+assert_equal(expanded_mask_tile.get("object_mask_expand"), 2.0, "auto mask expand should be preserved in tile metadata")
+
 large_body_mask = Image.new("L", (900, 600), 255)
 large_body_layout = ttp._ttp_boxes_to_auto_layout(
     [{"x": 0, "y": 0, "width": 900, "height": 600, "label": "person body", "score": 0.93}],
@@ -1215,6 +1404,7 @@ paint_layout, paint_message = ttp._ttp_run_paint_mask_auto_layout(
     default_pad=8,
     default_blend=4,
     object_padding=2,
+    mask_expand=2,
     max_tiles=8,
     allow_object_overlap=True,
 )
@@ -1226,6 +1416,51 @@ assert_equal("paint mask" in paint_message.lower(), True, "paint-only auto tile 
 half_mask = Image.new("L", (8, 8), 128)
 half_mask_data = ttp._ttp_encode_object_mask_data([half_mask], [0], [0, 0, 8, 8])
 assemble_node = ttp.TTP_Smart_Tile_Assemble_Experimental()
+stack_assemble_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "original_size": [8, 8],
+    "tile_meta": {
+        "type": "ttp_smart_tile",
+        "original_size": [8, 8],
+        "tiles": [
+            {
+                "name": f"stack_tile_{index + 1}",
+                "core_box": [0, 0, 8, 8],
+                "sample_box": [0, 0, 8, 8],
+                "tile_canvas_size": [8, 8],
+                "tile_canvas_box": [0, 0, 8, 8],
+                "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+                "blend": 0,
+                "importance": 1.0,
+                "priority": 0.0,
+                "layer": 1 if index == 3 else 0,
+                "occlusion_priority": 80000 if index == 3 else 0,
+            }
+            for index in range(4)
+        ],
+    },
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (220, 20, 20)))[0],
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (20, 220, 20)))[0],
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (20, 20, 220)))[0],
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (220, 220, 20)))[0],
+    ],
+}
+stack_assemble_set, _stack_assemble_json, _stack_assemble_summary = stack_node.apply_stack_order(
+    stack_assemble_tile_set,
+    tile_order="T1,T3,T2",
+)
+stack_assembled, _stack_assembled_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="black",
+    auto_composite_policy="safe_auto",
+    tile_set=stack_assemble_set,
+)
+stack_center = stack_assembled.array[0, 4, 4]
+assert_equal(float(stack_center[0]) > float(stack_center[2]), True, "stack order assemble should put the first listed tile on top by default")
+assert_equal(float(stack_center[0]) > float(stack_center[1]), True, "stack order assemble should keep unlisted and later listed tiles behind the first listed tile")
 soft_tile_meta = {
     "type": "ttp_smart_tile",
     "original_size": [8, 8],
@@ -1544,6 +1779,166 @@ safe_eye_edge = safe_eye.array[0, 4, 8]
 safe_eye_center = safe_eye.array[0, 8, 8]
 assert_equal(float(safe_eye_edge[0]) > float(strict_eye_edge[0]), True, "safe auto detail overlay should preserve more face color at eye mask edges")
 assert_equal(float(safe_eye_center[2]) > float(safe_eye_center[0]), True, "safe auto detail overlay should keep eye details stronger at the mask center")
+
+replace_mask_full = Image.new("L", (16, 16), 0)
+ImageDraw.Draw(replace_mask_full).rectangle((7, 7, 8, 8), fill=255)
+replace_mask_data = ttp._ttp_encode_object_mask_data([replace_mask_full], [0], [4, 4, 12, 12])
+replace_mask_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "original_size": [16, 16],
+    "tile_meta": {
+        "type": "ttp_smart_tile",
+        "original_size": [16, 16],
+        "tiles": [
+            {
+                "name": "masked_edit",
+                "label": "paint mask edit",
+                "core_box": [4, 4, 8, 8],
+                "sample_box": [4, 4, 8, 8],
+                "tile_canvas_size": [8, 8],
+                "tile_canvas_box": [0, 0, 8, 8],
+                "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+                "blend": 0,
+                "importance": 1.0,
+                "priority": 0.0,
+                "layer": 0,
+                "occlusion_priority": 0,
+                "object_mask": replace_mask_data,
+                "composite_mode": "replace_tile",
+            },
+        ],
+    },
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (20, 20, 220)))[0],
+    ],
+}
+replace_source = ttp.pil2tensor(Image.new("RGB", (16, 16), (220, 20, 20)))
+replace_masked, _replace_masked_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="source_image",
+    mask_blend_mode="off",
+    auto_composite_policy="replace_tile",
+    source_image=replace_source,
+    tile_set=replace_mask_tile_set,
+)
+replace_mask_corner = replace_masked.array[0, 4, 4]
+replace_mask_center = replace_masked.array[0, 8, 8]
+assert_equal(float(replace_mask_corner[0]) > float(replace_mask_corner[2]), True, "replace_tile must preserve source pixels outside an object mask instead of pasting a rectangle")
+assert_equal(float(replace_mask_center[2]) > float(replace_mask_center[0]), True, "replace_tile must hard replace pixels inside an object mask")
+replace_boxed, _replace_boxed_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="source_image",
+    mask_blend_mode="off",
+    auto_composite_policy="replace_tile",
+    replace_tile_shape="tile_box_first",
+    source_image=replace_source,
+    tile_set=replace_mask_tile_set,
+)
+replace_box_corner = replace_boxed.array[0, 4, 4]
+replace_box_center = replace_boxed.array[0, 8, 8]
+assert_equal(float(replace_box_corner[2]) > float(replace_box_corner[0]), True, "replace_tile tile_box_first should paste the full tile rectangle even when an object mask exists")
+assert_equal(float(replace_box_center[2]) > float(replace_box_center[0]), True, "replace_tile tile_box_first should still replace the object center")
+
+replace_soft_mask_full = Image.new("L", (16, 16), 0)
+ImageDraw.Draw(replace_soft_mask_full).rectangle((4, 4, 11, 11), fill=128)
+replace_soft_mask_data = ttp._ttp_encode_object_mask_data([replace_soft_mask_full], [0], [4, 4, 12, 12])
+replace_soft_mask_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "original_size": [16, 16],
+    "tile_meta": {
+        "type": "ttp_smart_tile",
+        "original_size": [16, 16],
+        "tiles": [
+            {
+                "name": "soft_masked_edit",
+                "label": "paint mask edit",
+                "core_box": [4, 4, 8, 8],
+                "sample_box": [4, 4, 8, 8],
+                "tile_canvas_size": [8, 8],
+                "tile_canvas_box": [0, 0, 8, 8],
+                "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+                "blend": 0,
+                "importance": 1.0,
+                "priority": 0.0,
+                "layer": 0,
+                "occlusion_priority": 0,
+                "object_mask": replace_soft_mask_data,
+                "composite_mode": "replace_tile",
+            },
+        ],
+    },
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (20, 20, 220)))[0],
+    ],
+}
+replace_soft_masked, _replace_soft_masked_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="source_image",
+    mask_blend_mode="off",
+    auto_composite_policy="replace_tile",
+    source_image=replace_source,
+    tile_set=replace_soft_mask_tile_set,
+)
+replace_soft_center = replace_soft_masked.array[0, 8, 8]
+assert_equal(float(replace_soft_center[2]) > 0.8, True, "replace_tile mask_first should harden soft mask interiors instead of making the whole edit translucent")
+assert_equal(float(replace_soft_center[0]) < 0.2, True, "replace_tile mask_first should remove source pixels from soft mask interiors")
+
+replace_own_mask_full = Image.new("L", (16, 16), 0)
+ImageDraw.Draw(replace_own_mask_full).rectangle((7, 7, 8, 8), fill=255)
+replace_source_mask_full = Image.new("L", (16, 16), 0)
+ImageDraw.Draw(replace_source_mask_full).rectangle((4, 4, 11, 11), fill=255)
+replace_own_mask_data = ttp._ttp_encode_object_mask_data([replace_own_mask_full], [0], [4, 4, 12, 12])
+replace_source_mask_data = ttp._ttp_encode_object_mask_data([replace_source_mask_full], [0], [4, 4, 12, 12])
+replace_own_mask_tile_set = {
+    "type": "ttp_smart_tile_set",
+    "original_size": [16, 16],
+    "tile_meta": {
+        "type": "ttp_smart_tile",
+        "original_size": [16, 16],
+        "tiles": [
+            {
+                "name": "own_mask_edit",
+                "label": "paint mask edit",
+                "core_box": [4, 4, 8, 8],
+                "sample_box": [4, 4, 8, 8],
+                "tile_canvas_size": [8, 8],
+                "tile_canvas_box": [0, 0, 8, 8],
+                "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+                "blend": 0,
+                "importance": 1.0,
+                "priority": 0.0,
+                "layer": 0,
+                "occlusion_priority": 0,
+                "object_mask": replace_own_mask_data,
+                "object_mask_source": replace_source_mask_data,
+                "composite_mode": "replace_tile",
+            },
+        ],
+    },
+    "tile_images": [
+        ttp.pil2tensor(Image.new("RGB", (8, 8), (20, 20, 220)))[0],
+    ],
+}
+replace_own_masked, _replace_own_masked_weights = assemble_node.assemble_tiles(
+    blend_multiplier=1.0,
+    output_scale=1.0,
+    use_priority=True,
+    base_canvas_mode="source_image",
+    mask_blend_mode="off",
+    auto_composite_policy="replace_tile",
+    source_image=replace_source,
+    tile_set=replace_own_mask_tile_set,
+)
+replace_source_only_pixel = replace_own_masked.array[0, 4, 4]
+replace_own_center_pixel = replace_own_masked.array[0, 8, 8]
+assert_equal(float(replace_source_only_pixel[0]) > float(replace_source_only_pixel[2]), True, "replace_tile mask_first should prefer the tile's own cropped object mask over a broader source mask")
+assert_equal(float(replace_own_center_pixel[2]) > float(replace_own_center_pixel[0]), True, "replace_tile mask_first should still replace pixels inside the tile's own mask")
 
 subdivided_mask_full = Image.new("L", (64, 64), 0)
 ImageDraw.Draw(subdivided_mask_full).rectangle((24, 24, 39, 39), fill=255)
