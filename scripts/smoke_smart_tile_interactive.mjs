@@ -34,6 +34,8 @@ assert(/async function inferSmartTileLayout/.test(source), "tile editor should e
 assert(/app\.queuePrompt\(0,\s*1,\s*\[String\(node\.id\)\]\)/.test(source), "Infer action should queue only the current Smart Tile node");
 assert(/ttp-smart-tile-layout/.test(source), "Infer action should listen for backend layout updates");
 assert(/auto_detect_request/.test(source), "Infer action should increment the node inference request widget");
+assert(/options\.fillGaps !== false/.test(source), "Infer action should allow disabling automatic gap filling");
+assert(/modeOverride: "sam3\.1"/.test(source), "Auto SAM should force SAM3.1 detection");
 assert(!/\/ttp\/smart_tile\/analyze/.test(source), "Infer action should not use the old analysis route");
 assert(/occlusion_priority/.test(source), "interactive layout should preserve auto tile priority metadata");
 assert(/TTP_Smart_Tile_Loop_Source_Experimental/.test(source), "frontend should know the Smart Tile Loop Source node");
@@ -54,6 +56,8 @@ assert(/snapCreatedTile/.test(source), "tile editor should snap newly drawn tile
 assert(/function fillTileGaps/.test(source), "tile editor should share automatic gap filling logic");
 assert(/function autoMaxTiles/.test(source), "tile editor should read the Auto Tile max tile limit");
 assert(/const filled = fillTileGaps\(node, layout\.tiles, autoMaxTiles\(node\)\);/.test(source), "Auto Tile gap fill should respect auto_max_tiles");
+assert(/if \(fillGaps\) \{\s*const filled = fillTileGaps\(node, layout\.tiles, autoMaxTiles\(node\)\);/s.test(source), "Auto Tile should only fill gaps when requested");
+assert(/writeLayout\(node, layout\.tiles, 0\);\s*const coverage = analyzeCoverage\(layout\.tiles\);/s.test(source), "Auto SAM should write detected tiles without gap filling");
 assert(/source: "auto_gap"/.test(source), "auto-filled gap tiles should be marked as background gap tiles");
 assert(/function editorStageSize/.test(source), "tile editor should compute a fixed source-ratio stage size");
 assert(!/aspect-ratio:/.test(source), "tile editor should not rely on CSS aspect-ratio when the node is resized");
@@ -105,6 +109,8 @@ assert(/source: "paint_mask"/.test(source), "paint-created tiles should be marke
 assert(/object_mask:\s*\{/.test(source), "paint-created tiles should persist object masks in layout metadata");
 assert(/Clear mask/.test(source), "tile editor should expose a clear mask action");
 assert(/syncPaintMaskWidget\(node\);\s*inferSmartTileLayout\(node\);/s.test(source), "Auto Tile should submit the latest painted mask before inference");
+assert(/Auto SAM/.test(source), "tile editor should expose an Auto SAM action");
+assert(/syncPaintMaskWidget\(node\);\s*inferSmartTileLayout\(node, \{\s*fillGaps: false,/s.test(source), "Auto SAM should submit masks and disable automatic gap filling");
 assert(!/PROMPT_BUILDER_NAME/.test(source), "frontend must not hook the QwenVL prompt builder node");
 assert(!/repairPromptBuilderWidgets/.test(source), "prompt builder values must be left to native ComfyUI widget serialization");
 assert(!/ttp_prompt_builder_values/.test(source), "prompt builder must not restore stale named widget values from properties");

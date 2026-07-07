@@ -47,6 +47,7 @@ Useful editor actions:
 - `Refresh masks`: after manually moving sub-tiles from a masked tile, re-crop the inherited masks to the current tile boxes.
 - `Fill gaps`: add background tiles for uncovered areas.
 - `Auto Tile`: run SAM3.1 or QwenVL3 detection and write the detected layout back into the editor.
+- `Auto SAM`: run SAM3.1 detection and keep only detected object tiles without automatic gap filling.
 
 When subdividing a masked tile with `Grid in`, the Mask mode can crop the original object mask into child tiles or skip empty mask children. The child tiles keep a parent mask source, so `Refresh masks` can update them after manual edits.
 

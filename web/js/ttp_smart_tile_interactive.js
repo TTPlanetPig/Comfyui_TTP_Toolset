@@ -1383,18 +1383,26 @@ async function loadSelectedInputImage(node, force = false) {
     renderEditor(node);
 }
 
-async function inferSmartTileLayout(node) {
-    const mode = String(widgetByName(node, "auto_detect_mode")?.value ?? "none");
+async function inferSmartTileLayout(node, options = {}) {
+    const modeWidget = widgetByName(node, "auto_detect_mode");
+    if (options.modeOverride && modeWidget) {
+        modeWidget.value = String(options.modeOverride);
+    }
+    const mode = String(modeWidget?.value ?? "none");
     if (mode === "none") {
         node.ttpSmartTileStatus = "Set auto detect mode to sam3.1 or qwenvl3 before inference.";
         renderEditor(node);
         return;
     }
+    const fillGaps = options.fillGaps !== false;
+    const actionLabel = String(options.label || (fillGaps ? "Auto Tile" : "Auto SAM"));
     const requestWidget = widgetByName(node, "auto_detect_request");
     if (requestWidget) {
         requestWidget.value = Number(requestWidget.value ?? 0) + 1;
     }
-    node.ttpSmartTileStatus = `Queued ${mode} inference for this node only...`;
+    node.ttpSmartTileAutoFillGaps = fillGaps;
+    node.ttpSmartTileInferenceLabel = actionLabel;
+    node.ttpSmartTileStatus = `Queued ${actionLabel} (${mode}) inference for this node only...`;
     renderEditor(node);
     try {
         await app.queuePrompt(0, 1, [String(node.id)]);
@@ -1419,6 +1427,8 @@ function applyInferenceResult(detail) {
     if (requestWidget) {
         requestWidget.value = 0;
     }
+    const fillGaps = node.ttpSmartTileAutoFillGaps !== false;
+    const actionLabel = String(node.ttpSmartTileInferenceLabel || (fillGaps ? "Auto Tile" : "Auto SAM"));
     const statusParts = [];
     if (detail.message) {
         statusParts.push(detail.message);
@@ -1429,13 +1439,22 @@ function applyInferenceResult(detail) {
         try {
             const layout = JSON.parse(detail.layout_json);
             if (Array.isArray(layout?.tiles) && layout.tiles.length) {
-                const filled = fillTileGaps(node, layout.tiles, autoMaxTiles(node));
-                writeLayout(node, filled.tiles, 0);
-                if (filled.added > 0) {
-                    statusParts.push(`Auto Tile added ${filled.added} gap tile(s).`);
-                }
-                if (filled.coverage.gaps.length > 0) {
-                    statusParts.push(`${filled.coverage.gaps.length} gap(s) remain.`);
+                if (fillGaps) {
+                    const filled = fillTileGaps(node, layout.tiles, autoMaxTiles(node));
+                    writeLayout(node, filled.tiles, 0);
+                    if (filled.added > 0) {
+                        statusParts.push(`Auto Tile added ${filled.added} gap tile(s).`);
+                    }
+                    if (filled.coverage.gaps.length > 0) {
+                        statusParts.push(`${filled.coverage.gaps.length} gap(s) remain.`);
+                    }
+                } else {
+                    writeLayout(node, layout.tiles, 0);
+                    const coverage = analyzeCoverage(layout.tiles);
+                    statusParts.push(`${actionLabel} kept detected tile(s) without gap filling.`);
+                    if (coverage.gaps.length > 0) {
+                        statusParts.push(`${coverage.gaps.length} gap(s) remain.`);
+                    }
                 }
             }
         } catch (error) {
@@ -2312,6 +2331,14 @@ function renderEditor(node) {
         createButton("Auto Tile", () => {
             syncPaintMaskWidget(node);
             inferSmartTileLayout(node);
+        }),
+        createButton("Auto SAM", () => {
+            syncPaintMaskWidget(node);
+            inferSmartTileLayout(node, {
+                fillGaps: false,
+                label: "Auto SAM",
+                modeOverride: "sam3.1",
+            });
         }),
         createButton("Add tile", () => {
             const base = tiles[selectedIndex] ?? { x0: 0.25, y0: 0.25, x1: 0.75, y1: 0.75 };
