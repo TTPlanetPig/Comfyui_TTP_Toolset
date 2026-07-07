@@ -95,7 +95,10 @@ By default, `TTP Smart Tile Assemble` uses `assemble_mode=final_only`. Connect `
 
 #### **Complete Example Workflow / 完整范例工作流**
 
-Example workflow / 示例工作流: [`examples/smart_tile_qwen_sam_loop_example_v2.json`](examples/smart_tile_qwen_sam_loop_example_v2.json)
+Example workflows / 示例工作流:
+
+- Full Smart Tile loop / 完整 Smart Tile 循环: [`examples/smart_tile_qwen_sam_loop_example_v2.json`](examples/smart_tile_qwen_sam_loop_example_v2.json)
+- Krea2 edit sampler workflow / Krea2 edit 采样工作流: [`examples/ttp_smart_tile_example_Krea2_edit.json`](examples/ttp_smart_tile_example_Krea2_edit.json)
 
 这份工作流展示了当前推荐的 Smart Tile 完整链路：先用 `TTP Smart Tile Interactive Crop` 和 `sam3.1` 做 Auto Tile 分块，再用 `TTP Smart Tile QwenVL Prompt Set Builder` 生成每块提示词。随后 `Semantic Rank` 写入语义优先级，`Loop Source` 把 tile 一张一张送入 img2img，`Image Upscale Prep` 负责采样前放大，`Loop Collect` 收集结果，最后由 `Output Size Estimate` 估算画布尺寸，`Assemble` 在 `final_only` 模式下一次拼合，`Save Final Image` 只保存最终图。
 

@@ -1,0 +1,3035 @@
+{
+  "id": "cd8aef5f-a1cf-476d-be4e-907e81e60a63",
+  "revision": 0,
+  "last_node_id": 126,
+  "last_link_id": 190,
+  "nodes": [
+    {
+      "id": 52,
+      "type": "UNETLoader",
+      "pos": [
+        7462.490847937064,
+        -915.808134896543
+      ],
+      "size": [
+        330,
+        90
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "slot_index": 0,
+          "links": [
+            45
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.48",
+        "Node name for S&R": "UNETLoader",
+        "models": [
+          {
+            "name": "qwen_image_fp8_e4m3fn.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_fp8_e4m3fn.safetensors",
+            "directory": "diffusion_models"
+          }
+        ],
+        "ue_properties": {
+          "version": "7.8",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        },
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": [
+        "krea2_raw_fp8_scaled.safetensors",
+        "default"
+      ]
+    },
+    {
+      "id": 45,
+      "type": "CLIPLoader",
+      "pos": [
+        7468.562078651421,
+        -745.4519813247623
+      ],
+      "size": [
+        330,
+        110
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "slot_index": 0,
+          "links": [
+            172,
+            173
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.48",
+        "Node name for S&R": "CLIPLoader",
+        "models": [
+          {
+            "name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+            "directory": "text_encoders"
+          }
+        ],
+        "ue_properties": {
+          "version": "7.8",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        },
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": [
+        "qwen3vl_4b_fp8_scaled.safetensors",
+        "krea2",
+        "default"
+      ]
+    },
+    {
+      "id": 88,
+      "type": "ConditioningKrea2Rebalance",
+      "pos": [
+        8654.732252204929,
+        -990.5736503127102
+      ],
+      "size": [
+        210,
+        130
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 32,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "conditioning",
+          "type": "CONDITIONING",
+          "link": 103
+        }
+      ],
+      "outputs": [
+        {
+          "name": "conditioning",
+          "type": "CONDITIONING",
+          "links": [
+            105
+          ]
+        }
+      ],
+      "title": "NSFW",
+      "properties": {
+        "cnr_id": "comfyui-krea2-conditioning",
+        "ver": "1.0.2",
+        "Node name for S&R": "ConditioningKrea2Rebalance",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "custom",
+        "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0",
+        4,
+        true
+      ]
+    },
+    {
+      "id": 3,
+      "type": "TTP_Smart_Tile_Set_Preview_Experimental",
+      "pos": [
+        6758.379743074283,
+        -1224.1786871821912
+      ],
+      "size": [
+        380.378515625,
+        174
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "tile_set",
+          "type": "TTP_SMART_TILE_SET",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "13b942497bbdfa83cbaa97ed1f9afd197d9552ea",
+        "Node name for S&R": "TTP_Smart_Tile_Set_Preview_Experimental",
+        "aux_id": "TTPlanetPig/Comfyui_Tile_Toolset",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "contact_sheet",
+        5,
+        512,
+        4,
+        true
+      ]
+    },
+    {
+      "id": 100,
+      "type": "UpscaleModelLoader",
+      "pos": [
+        7065.530629157885,
+        -1485.0158886925333
+      ],
+      "size": [
+        270,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "UPSCALE_MODEL",
+          "type": "UPSCALE_MODEL",
+          "links": [
+            139
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.25.1",
+        "Node name for S&R": "UpscaleModelLoader",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "4xNomos2_hq_mosr.pth"
+      ]
+    },
+    {
+      "id": 87,
+      "type": "ConditioningKrea2Rebalance",
+      "pos": [
+        8376.378893081504,
+        -989.7293015544237
+      ],
+      "size": [
+        246.0513671875,
+        130
+      ],
+      "flags": {},
+      "order": 31,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "conditioning",
+          "type": "CONDITIONING",
+          "link": 176
+        }
+      ],
+      "outputs": [
+        {
+          "name": "conditioning",
+          "type": "CONDITIONING",
+          "links": [
+            103
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-krea2-conditioning",
+        "ver": "1.0.2",
+        "Node name for S&R": "ConditioningKrea2Rebalance",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "detail",
+        "1.0,1.0,1.0,1.0,1.0,1.0,1.0,2.5,5.0,1.1,4.0,1.0",
+        1,
+        true
+      ]
+    },
+    {
+      "id": 73,
+      "type": "TTP_QwenVL3_Local_Loader_Experimental",
+      "pos": [
+        6818.326677184429,
+        371.5168411884254
+      ],
+      "size": [
+        384.93125,
+        126
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "qwen_vl_model",
+          "type": "TTP_QWENVL3_MODEL",
+          "links": [
+            126
+          ]
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "13b942497bbdfa83cbaa97ed1f9afd197d9552ea",
+        "Node name for S&R": "TTP_QwenVL3_Local_Loader_Experimental",
+        "aux_id": "TTPlanetPig/Comfyui_Tile_Toolset",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "qwen3vl_4b_fp8_scaled.safetensors",
+        "qwen_vl",
+        "default"
+      ]
+    },
+    {
+      "id": 86,
+      "type": "PreviewImage",
+      "pos": [
+        9024.736618624136,
+        -1669.993879327825
+      ],
+      "size": [
+        440.0236516238401,
+        404.0832416502021
+      ],
+      "flags": {},
+      "order": 43,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 132
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.25.1",
+        "Node name for S&R": "PreviewImage",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 4,
+      "type": "PreviewImage",
+      "pos": [
+        7447.843354318705,
+        -1514.5687280780926
+      ],
+      "size": [
+        608.179058584944,
+        353.0181541728276
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.25.1",
+        "Node name for S&R": "PreviewImage",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 101,
+      "type": "ImageUpscaleWithModel",
+      "pos": [
+        7090.217747550998,
+        -1603.789740486893
+      ],
+      "size": [
+        233.5689453125,
+        46
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "upscale_model",
+          "type": "UPSCALE_MODEL",
+          "link": 139
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 140
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            147
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.25.1",
+        "Node name for S&R": "ImageUpscaleWithModel",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 104,
+      "type": "ImageScaleBy",
+      "pos": [
+        7074.152400444106,
+        -1381.3054112674545
+      ],
+      "size": [
+        251.08817741061466,
+        82
+      ],
+      "flags": {},
+      "order": 39,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 147
+        },
+        {
+          "name": "scale_by",
+          "type": "FLOAT",
+          "widget": {
+            "name": "scale_by"
+          },
+          "link": 164
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            148
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.27.0",
+        "Node name for S&R": "ImageScaleBy",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "lanczos",
+        3
+      ]
+    },
+    {
+      "id": 107,
+      "type": "TTP_Smart_Tile_Output_Size_Estimate_Experimental",
+      "pos": [
+        7685.862906606706,
+        -1845.6172978765278
+      ],
+      "size": [
+        339.321875,
+        158
+      ],
+      "flags": {},
+      "order": 37,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "tile_set",
+          "type": "TTP_SMART_TILE_SET",
+          "link": 151
+        },
+        {
+          "name": "source_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 152
+        },
+        {
+          "name": "done",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "link": 165
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_scale",
+          "type": "FLOAT",
+          "links": [
+            162,
+            163,
+            164
+          ]
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "scale_x",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "scale_y",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "ffbe682596192205d4480d31a27930a1a99b6c48",
+        "Node name for S&R": "TTP_Smart_Tile_Output_Size_Estimate_Experimental",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "focus_weighted"
+      ]
+    },
+    {
+      "id": 110,
+      "type": "TTP_QwenVL3_Local_Loader_Experimental",
+      "pos": [
+        5745.704860206592,
+        -1081.7779177306504
+      ],
+      "size": [
+        284.593359375,
+        126
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "qwen_vl_model",
+          "type": "TTP_QWENVL3_MODEL",
+          "links": [
+            161
+          ]
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "170cb6400b58c03f145e469e55a8cdf7447086d5",
+        "Node name for S&R": "TTP_QwenVL3_Local_Loader_Experimental",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "qwen3vl_4b_fp8_scaled.safetensors",
+        "qwen_vl",
+        "default"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        5759.828881697417,
+        -1243.8150362553656
+      ],
+      "size": [
+        270,
+        98
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1
+          ]
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            75
+          ]
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.25.1",
+        "Node name for S&R": "CheckpointLoaderSimple",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "sam3.1_multiplex_fp16.safetensors"
+      ]
+    },
+    {
+      "id": 108,
+      "type": "TTP_Smart_Tile_Semantic_Rank_Experimental",
+      "pos": [
+        6824.0951696087905,
+        -530.0039871527249
+      ],
+      "size": [
+        300.0904296875,
+        222
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "tile_set",
+          "type": "TTP_SMART_TILE_SET",
+          "link": 169
+        }
+      ],
+      "outputs": [
+        {
+          "name": "tile_set",
+          "type": "TTP_SMART_TILE_SET",
+          "links": [
+            156
+          ]
+        },
+        {
+          "name": "semantic_report",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "e197be302bb542758b3ad7789713942a26b9213b",
+        "Node name for S&R": "TTP_Smart_Tile_Semantic_Rank_Experimental",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "portrait",
+        true,
+        1.5,
+        1.2,
+        1.4,
+        0.25,
+        0.35
+      ]
+    },
+    {
+      "id": 112,
+      "type": "easy showAnything",
+      "pos": [
+        8078.669104244257,
+        -1921.0673272528074
+      ],
+      "size": [
+        259.584791258756,
+        282.9737743530511
+      ],
+      "flags": {},
+      "order": 38,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "shape": 7,
+          "type": "*",
+          "link": 162
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-easy-use",
+        "ver": "00c69fc8163478edfd25b12e758b561d66107054",
+        "Node name for S&R": "easy showAnything",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "1.0"
+      ]
+    },
+    {
+      "id": 57,
+      "type": "TTP_Smart_Tile_Loop_Collect_Experimental",
+      "pos": [
+        7474.540921151831,
+        -1083.7723855254476
+      ],
+      "size": [
+        325.5806640625,
+        86
+      ],
+      "flags": {},
+      "order": 35,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "tile_task",
+          "type": "TTP_SMART_TILE_TASK",
+          "link": 50
+        },
+        {
+          "name": "processed_image",
+          "type": "IMAGE",
+          "link": 49
+        }
+      ],
+      "outputs": [
+        {
+          "name": "tile_set",
+          "type": "TTP_SMART_TILE_SET",
+          "links": [
+            133,
+            151
+          ]
+        },
+        {
+          "name": "done",
+          "type": "BOOLEAN",
+          "links": [
+            135,
+            136,
+            165
+          ]
+        },
+        {
+          "name": "next_index",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "13b942497bbdfa83cbaa97ed1f9afd197d9552ea",
+        "Node name for S&R": "TTP_Smart_Tile_Loop_Collect_Experimental",
+        "aux_id": "TTPlanetPig/Comfyui_Tile_Toolset",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 54,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        7906.2855217715505,
+        -1040.8082388924556
+      ],
+      "size": [
+        424.12090793000425,
+        82
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 45
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            166
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.50",
+        "Node name for S&R": "LoraLoaderModelOnly",
+        "ue_properties": {
+          "version": "7.8",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "krea2_turbo_lora_rank_64_bf16.safetensors",
+        1.0000000000000002
+      ]
+    },
+    {
+      "id": 114,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        7895.403490127696,
+        -894.5991544127013
+      ],
+      "size": [
+        424.12090793000425,
+        82
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 166
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            167
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.50",
+        "Node name for S&R": "LoraLoaderModelOnly",
+        "ue_properties": {
+          "version": "7.8",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "krea2\\krea2_lora-edit-step00005310.safetensors",
+        1.0000000000000002
+      ]
+    },
+    {
+      "id": 118,
+      "type": "FluxKontextMultiReferenceLatentMethod",
+      "pos": [
+        8371.40331624897,
+        -283.71836153614277
+      ],
+      "size": [
+        387.234375,
+        132
+      ],
+      "flags": {},
+      "order": 29,
+      "mode": 0,
+      "showAdvanced": true,
+      "inputs": [
+        {
+          "name": "conditioning",
+          "type": "CONDITIONING",
+          "link": 170
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            176
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.5.1",
+        "Node name for S&R": "FluxKontextMultiReferenceLatentMethod",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.5.2",
+          "input_ue_unconnectable": {}
+        },
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": [
+        "index_timestep_zero"
+      ],
+      "color": "#222",
+      "bgcolor": "#000"
+    },
+    {
+      "id": 119,
+      "type": "FluxKontextMultiReferenceLatentMethod",
+      "pos": [
+        8391.220409384056,
+        -80.28229785234356
+      ],
+      "size": [
+        394.53125,
+        132
+      ],
+      "flags": {},
+      "order": 30,
+      "mode": 0,
+      "showAdvanced": true,
+      "inputs": [
+        {
+          "name": "conditioning",
+          "type": "CONDITIONING",
+          "link": 171
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            177
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.5.1",
+        "Node name for S&R": "FluxKontextMultiReferenceLatentMethod",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.5.2",
+          "input_ue_unconnectable": {}
+        },
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": [
+        "index_timestep_zero"
+      ],
+      "color": "#222",
+      "bgcolor": "#000"
+    },
+    {
+      "id": 90,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        8385.13769171505,
+        -808.329631093116
+      ],
+      "size": [
+        279.8870112415516,
+        91.06742527077176
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 167
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            178
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.7.0",
+        "Node name for S&R": "LoraLoaderModelOnly",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.3"
+        }
+      },
+      "widgets_values": [
+        "krea2\\krea2_lora_通行证虎豹骑版.safetensors",
+        1
+      ]
+    },
+    {
+      "id": 117,
+      "type": "Krea2OstrisEditModelPatch",
+      "pos": [
+        8705.951123025794,
+        -793.4080755163942
+      ],
+      "size": [
+        241.2388671875,
+        72
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 178
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            179
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "ostris/ComfyUI-Krea2-Ostris-Edit",
+        "ver": "e1480183753a72f76b17c36989188d5a0da4e8ad",
+        "Node name for S&R": "Krea2OstrisEditModelPatch",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [],
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 120,
+      "type": "Note",
+      "pos": [
+        5764.546433283068,
+        -771.1191444247169
+      ],
+      "size": [
+        212.22223047640637,
+        303.2749365533083
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.8",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "hunman body, breast, hair, face with eyes, hands, eyes, person, text, foreground object, important object, background"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 56,
+      "type": "VAEEncode",
+      "pos": [
+        7699.169554462349,
+        -342.2526859712266
+      ],
+      "size": [
+        140,
+        46
+      ],
+      "flags": {},
+      "order": 27,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pixels",
+          "type": "IMAGE",
+          "link": 182
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 47
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            48
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.25.1",
+        "Node name for S&R": "VAEEncode",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 71,
+      "type": "TTPlanet_Tile_Preprocessor_Simple",
+      "pos": [
+        7314.128435897908,
+        -384.3604708824562
+      ],
+      "size": [
+        268.3948828907618,
+        82
+      ],
+      "flags": {},
+      "order": 24,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 145
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image_output",
+          "type": "IMAGE",
+          "links": [
+            180,
+            181,
+            182,
+            184
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "13b942497bbdfa83cbaa97ed1f9afd197d9552ea",
+        "Node name for S&R": "TTPlanet_Tile_Preprocessor_Simple",
+        "aux_id": "TTPlanetPig/Comfyui_Tile_Toolset",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        1,
+        1
+      ]
+    },
+    {
+      "id": 44,
+      "type": "VAEDecode",
+      "pos": [
+        8727.07058036037,
+        -560.9358746621479
+      ],
+      "size": [
+        210,
+        46
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 34,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 37
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 38
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": [
+            49,
+            183
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.48",
+        "Node name for S&R": "VAEDecode",
+        "ue_properties": {
+          "version": "7.8",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        },
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 116,
+      "type": "TextEncodeKrea2OstrisEdit",
+      "pos": [
+        7904.453319004711,
+        -761.5050799141077
+      ],
+      "size": [
+        400,
+        236
+      ],
+      "flags": {},
+      "order": 25,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 172
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": 187
+        },
+        {
+          "name": "image1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 180
+        },
+        {
+          "name": "image2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "image3",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": 185
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            170
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "ostris/ComfyUI-Krea2-Ostris-Edit",
+        "ver": "e1480183753a72f76b17c36989188d5a0da4e8ad",
+        "Node name for S&R": "TextEncodeKrea2OstrisEdit",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        "把这个人的衣服裤子脱光，全裸"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 121,
+      "type": "PreviewImage",
+      "pos": [
+        8870.93040211008,
+        -145.68163290497455
+      ],
+      "size": [
+        140,
+        246
+      ],
+      "flags": {},
+      "order": 36,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 183
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.27.0",
+        "Node name for S&R": "PreviewImage",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 122,
+      "type": "PreviewImage",
+      "pos": [
+        7982.6705488080315,
+        193.1309305631285
+      ],
+      "size": [
+        140,
+        246.00000000000003
+      ],
+      "flags": {},
+      "order": 28,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 184
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.27.0",
+        "Node name for S&R": "PreviewImage",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 60,
+      "type": "UpscaleModelLoader",
+      "pos": [
+        7305.346519971941,
+        18.197477420988665
+      ],
+      "size": [
+        285.6380746519044,
+        70.87842432719708
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "UPSCALE_MODEL",
+          "type": "UPSCALE_MODEL",
+          "links": [
+            143
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.25.1",
+        "Node name for S&R": "UpscaleModelLoader",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "4x_NMKD-Siax_200k.pth"
+      ]
+    },
+    {
+      "id": 123,
+      "type": "easy showAnything",
+      "pos": [
+        7942.524573225282,
+        -53.45425297431326
+      ],
+      "size": [
+        291.3627411040634,
+        158.7895097412204
+      ],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "shape": 7,
+          "type": "*",
+          "link": 186
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "*",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-easy-use",
+        "ver": "00c69fc8163478edfd25b12e758b561d66107054",
+        "Node name for S&R": "easy showAnything",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "把衣服和裤子都移除，变成裸体"
+      ]
+    },
+    {
+      "id": 46,
+      "type": "VAELoader",
+      "pos": [
+        7466.743650126601,
+        -569.1648936436585
+      ],
+      "size": [
+        330,
+        60
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "slot_index": 0,
+          "links": [
+            38,
+            47,
+            187,
+            188
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.48",
+        "Node name for S&R": "VAELoader",
+        "models": [
+          {
+            "name": "qwen_image_vae.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors",
+            "directory": "vae"
+          }
+        ],
+        "ue_properties": {
+          "version": "7.8",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        },
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": [
+        "qwen_image_vae.safetensors"
+      ]
+    },
+    {
+      "id": 115,
+      "type": "TextEncodeKrea2OstrisEdit",
+      "pos": [
+        7897.754514968749,
+        -472.675966709236
+      ],
+      "size": [
+        400,
+        236
+      ],
+      "flags": {},
+      "order": 26,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 173
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": 188
+        },
+        {
+          "name": "image1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 181
+        },
+        {
+          "name": "image2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "image3",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": 175
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            171
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "ostris/ComfyUI-Krea2-Ostris-Edit",
+        "ver": "e1480183753a72f76b17c36989188d5a0da4e8ad",
+        "Node name for S&R": "TextEncodeKrea2OstrisEdit",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.5.2"
+        }
+      },
+      "widgets_values": [
+        ""
+      ],
+      "color": "#322",
+      "bgcolor": "#533"
+    },
+    {
+      "id": 103,
+      "type": "TTP_Smart_Tile_Image_Upscale_Prep_Experimental",
+      "pos": [
+        7305.399819189941,
+        -226.61487398689252
+      ],
+      "size": [
+        298.0327720814979,
+        177.72533592166974
+      ],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 144
+        },
+        {
+          "name": "upscale_model",
+          "shape": 7,
+          "type": "UPSCALE_MODEL",
+          "link": 143
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            145
+          ]
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "e078f6c90fa4590163bfb98b6fc3dcb3312fe1fd",
+        "Node name for S&R": "TTP_Smart_Tile_Image_Upscale_Prep_Experimental",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        1,
+        8,
+        "lanczos",
+        2,
+        true
+      ]
+    },
+    {
+      "id": 53,
+      "type": "KSampler",
+      "pos": [
+        8399.970916548791,
+        -620.9218030841128
+      ],
+      "size": [
+        300,
+        262
+      ],
+      "flags": {},
+      "order": 33,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 179
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 105
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 177
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 48
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "slot_index": 0,
+          "links": [
+            37
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.48",
+        "Node name for S&R": "KSampler",
+        "ue_properties": {
+          "version": "7.8",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        },
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": [
+        2538,
+        "fixed",
+        8,
+        1,
+        "euler",
+        "simple",
+        1
+      ]
+    },
+    {
+      "id": 109,
+      "type": "Image Comparer (rgthree)",
+      "pos": [
+        9806.904587637853,
+        -1020.0440591194717
+      ],
+      "size": [
+        676.002532566947,
+        952.0549164458728
+      ],
+      "flags": {},
+      "order": 42,
+      "mode": 0,
+      "inputs": [
+        {
+          "dir": 3,
+          "name": "image_a",
+          "type": "IMAGE",
+          "link": 158
+        },
+        {
+          "dir": 3,
+          "name": "image_b",
+          "type": "IMAGE",
+          "link": 159
+        }
+      ],
+      "outputs": [
+        {
+          "dir": 4,
+          "name": "images",
+          "shape": 3,
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "rgthree-comfy",
+        "ver": "8ff50e4521881eca1fe26aec9615fc9362474931",
+        "comparer_mode": "Slide",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        [
+          {
+            "name": "A",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_mlqcf_00023_.png&type=temp&subfolder=&rand=0.5526130469049017"
+          },
+          {
+            "name": "B",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_mlqcf_00024_.png&type=temp&subfolder=&rand=0.13611238568640838"
+          }
+        ]
+      ]
+    },
+    {
+      "id": 96,
+      "type": "TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental",
+      "pos": [
+        6756.499144081403,
+        -257.39937931464823
+      ],
+      "size": [
+        484.98203125,
+        578
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "tile_set",
+          "shape": 7,
+          "type": "TTP_SMART_TILE_SET",
+          "link": 125
+        },
+        {
+          "name": "reference_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "qwen_vl_model",
+          "shape": 7,
+          "type": "TTP_QWENVL3_MODEL",
+          "link": 126
+        }
+      ],
+      "outputs": [
+        {
+          "name": "tile_set",
+          "type": "TTP_SMART_TILE_SET",
+          "links": [
+            189
+          ]
+        },
+        {
+          "name": "prompt_set_json",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "summary",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "6813c5c78fca19063624ffeea8f5859040b1bf91",
+        "Node name for S&R": "TTP_Smart_Tile_QwenVL_Prompt_Set_Builder_Experimental",
+        "aux_id": "TTPlanetPig/Comfyui_Tile_Toolset",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "first_message",
+        "请用一段文字的中文为这张图片撰写400字左右的描述性说明（姿势必须精准）， 您的描述将用于文本转图像模型，请避免使用“这张图片展示...”、“您正在观看...”等冗余引言。按照视觉重点的顺序描述如下内容,每项分段：【最重要的，如果图中有则遵循，没有则无需遵循】\n* 描述说明画面属于特写、近景、中近景、中景、牛仔镜头、中广角、广角或超广角。对于主角必须描述里面其一【极端特写、特写、中景特写、中景、七分身镜头、中全景、全景、 广角、超广角、俯角、仰角、平视镜头、倾斜镜头、抓拍、三分构图法、剪影镜头、开场镜头、过肩镜头、主观视角、自拍】【正面？背面？侧面？】，详细 光影描述。\n*一句话描述准确主体（如果是女性，默认加上拉腿特效和大胸）在环境中位置姿势（具体详细的姿势，姿势必须精准），头部具体角度和身体角度。详细描述发型和妆容\n*画面主体采用什么色彩滤镜。\n*需包含以下信息：- 灯光效果说明- 拍摄角度解析- 构图风格要素（如引导线、三分法或对称构图）\n*采用写实口吻，涵盖严谨的穿搭细节、风格特征及肢体语言描述（含表情，妆容，头部转向细节，人体具体姿势，姿势和物体的互动，体型特点，表情与光线，服饰的详细款式颜色，详细花纹内容和详细质地）。\n*详细描述背景是否模糊和背景的构图细节\n*如含文字元素请完整描述 \n*若存在暴露的性器官，请详细描述；若无性器官则无需提及。",
+        "",
+        "",
+        "global_plus_label_plus_caption",
+        "chinese",
+        512,
+        0.2,
+        "tile_img2img_prompt",
+        768,
+        786432,
+        false,
+        "",
+        1111
+      ]
+    },
+    {
+      "id": 70,
+      "type": "TTP_Smart_Tile_Save_Final_Image_Experimental",
+      "pos": [
+        9061.84075677311,
+        -997.6136998404824
+      ],
+      "size": [
+        661.2019273948976,
+        959.2929308640921
+      ],
+      "flags": {},
+      "order": 41,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 131
+        },
+        {
+          "name": "done",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "done"
+          },
+          "link": 136
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "13b942497bbdfa83cbaa97ed1f9afd197d9552ea",
+        "Node name for S&R": "TTP_Smart_Tile_Save_Final_Image_Experimental",
+        "aux_id": "TTPlanetPig/Comfyui_Tile_Toolset",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        true,
+        "TTP_Smart_Tile"
+      ]
+    },
+    {
+      "id": 98,
+      "type": "TTP_Smart_Tile_Assemble_Experimental",
+      "pos": [
+        8430.63302507174,
+        -1758.2104281190789
+      ],
+      "size": [
+        323.033203125,
+        706
+      ],
+      "flags": {},
+      "order": 40,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "sampled_tiles",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "tile_meta",
+          "shape": 7,
+          "type": "TTP_SMART_TILE_META",
+          "link": null
+        },
+        {
+          "name": "tile_set",
+          "shape": 7,
+          "type": "TTP_SMART_TILE_SET",
+          "link": 133
+        },
+        {
+          "name": "base_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 148
+        },
+        {
+          "name": "source_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 138
+        },
+        {
+          "name": "color_reference_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "done",
+          "shape": 7,
+          "type": "BOOLEAN",
+          "link": 135
+        },
+        {
+          "name": "output_scale",
+          "type": "FLOAT",
+          "widget": {
+            "name": "output_scale"
+          },
+          "link": 163
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            131,
+            159
+          ]
+        },
+        {
+          "name": "weight_preview",
+          "type": "IMAGE",
+          "links": [
+            132
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "e563280a465693efefab2353a36c855bd520a0a2",
+        "Node name for S&R": "TTP_Smart_Tile_Assemble_Experimental",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        1,
+        3,
+        true,
+        "resize",
+        0,
+        "off",
+        0.5,
+        "mask_feather",
+        "off",
+        16,
+        "auto",
+        "use_if_higher_resolution",
+        0.55,
+        0.95,
+        0.25,
+        "auto",
+        "final_only",
+        "auto",
+        "raw_weight",
+        "safe_auto",
+        "replace_tile",
+        "mask_first"
+      ]
+    },
+    {
+      "id": 126,
+      "type": "TTP_Smart_Tile_Prompt_Override_Experimental",
+      "pos": [
+        7308.469909657928,
+        541.2926973820358
+      ],
+      "size": [
+        400,
+        326
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "tile_set",
+          "type": "TTP_SMART_TILE_SET",
+          "link": 189
+        }
+      ],
+      "outputs": [
+        {
+          "name": "tile_set",
+          "type": "TTP_SMART_TILE_SET",
+          "links": [
+            190
+          ]
+        },
+        {
+          "name": "override_json",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "summary",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "58eb154fa05f0c2ff690f607216f0d9bc26037b2",
+        "Node name for S&R": "TTP_Smart_Tile_Prompt_Override_Experimental",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "index",
+        "T2",
+        "keep",
+        "replace",
+        "把这个人的黑色衣服脱了，露出胸部",
+        "keep",
+        "",
+        ""
+      ]
+    },
+    {
+      "id": 1,
+      "type": "TTP_Smart_Tile_Interactive_Crop_Experimental",
+      "pos": [
+        6167.461319173381,
+        -1245.530001223193
+      ],
+      "size": [
+        542.465306506438,
+        1320
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "vision_model",
+          "shape": 7,
+          "type": "MODEL",
+          "link": 1
+        },
+        {
+          "name": "vision_conditioning",
+          "shape": 7,
+          "type": "CONDITIONING",
+          "link": null
+        },
+        {
+          "name": "clip",
+          "shape": 7,
+          "type": "CLIP",
+          "link": 75
+        },
+        {
+          "name": "qwen_vl_model",
+          "shape": 7,
+          "type": "TTP_QWENVL3_MODEL",
+          "link": 161
+        }
+      ],
+      "outputs": [
+        {
+          "name": "source_image",
+          "type": "IMAGE",
+          "links": [
+            138,
+            140,
+            152,
+            158
+          ]
+        },
+        {
+          "name": "tiles",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "tile_set",
+          "type": "TTP_SMART_TILE_SET",
+          "links": [
+            2,
+            125
+          ]
+        },
+        {
+          "name": "tile_meta",
+          "type": "TTP_SMART_TILE_META",
+          "links": null
+        },
+        {
+          "name": "positions",
+          "type": "LIST",
+          "links": null
+        },
+        {
+          "name": "preview",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "layout_json",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "13b942497bbdfa83cbaa97ed1f9afd197d9552ea",
+        "Node name for S&R": "TTP_Smart_Tile_Interactive_Crop_Experimental",
+        "aux_id": "TTPlanetPig/Comfyui_Tile_Toolset",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "8fba39e0-4323-4b29-ac24-8ad5b462873f.png",
+        "{\"version\":1,\"type\":\"ttp_smart_tile_interactive_layout\",\"source_size\":[1254,1254],\"defaults\":{\"pad\":16,\"blend\":8,\"priority\":50,\"importance\":1},\"tiles\":[{\"name\":\"merged_t1+t5\",\"source\":\"manual_merge\",\"label\":\"merged T1+T5\",\"score\":0.5478515625,\"layer\":2,\"object_id\":5,\"occlusion_priority\":716,\"priority\":88,\"importance\":1,\"pad\":8,\"blend\":8,\"object_mask\":{\"format\":\"png_base64\",\"box\":[736,328,334,696],\"width\":334,\"height\":696,\"data\":\"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\"},\"object_mask_source\":{\"format\":\"png_base64\",\"box\":[732,324,338,702],\"width\":338,\"height\":702,\"data\":\"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\"},\"object_mask_expand\":4,\"x0\":0.586922,\"y0\":0.261563,\"x1\":0.854864,\"y1\":0.816587},{\"name\":\"auto_object_2_2\",\"source\":\"auto\",\"label\":\"object_2\",\"score\":0.67626953125,\"layer\":2,\"object_id\":2,\"occlusion_priority\":726,\"priority\":88,\"importance\":1,\"pad\":8,\"blend\":8,\"object_mask\":{\"format\":\"png_base64\",\"box\":[952,349,302,302],\"width\":302,\"height\":302,\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAS4AAAEuCAAAAAAVK6CfAAADrUlEQVR42u3dUXLbMAwFQIKj+18ZPUAmbWmLEkks/uOJNw8QRCVxa0oppZRSSimllFJKKaWUUkoppZTasuLYd5Yz3mI/PxEpXYNIIV2vBKwG121eRbikC9fE7ktcL0yvXgYncZlda7djJ4NrGmKp2ZW4Hu3FYlfGxPWoV7x9Pvk0SjyVrjS6PmvGLNuOvYTRbe+jn6eVE99J/+h7yKr56naFCVxJtPB5V87lyn3SllO9qp6mJq62yOFzitcAVx4pmJpxhWbMnRo058arcrpyBlfyOjZdOdmrr3kru+2oP1sl06j3KyWrTLveThpeKV1LEeMa8sI15IVryAvXkBeuIS9cQ17dgfLI10rXkFdvzZlEzUUi53+5Zhzy6nX/FcAnXl0vjryEZrx51IfxdWK6cpFFIipp/eNlLrm6e02Ntdf6fPDVXBmHvLpWLHXPmI++Yq/9P9E8Z1yAS7yk65Ph1Zt4FUpXrsklXmYXrqW5Epfh9ZcUaEaza1muxKXu4LKo3pCuxMXrDq5wh33Dc8aMH995SNfvCvnj55zHdui1YUect3clLquXrR7XOlyBy6wv04x5DFdKl+o+cE+6cOFa9nISt3GFdClci3AFLoVrEa7ApQr8flduka7QjGoeV5TtRel6gCtwqbO5Eteh6Qpc7akD3J2fY2pGXPOi2/XiA+kKzShcb3GFdKkvuKLmZJOu17kCl1ViVrri0MOb77iiYuy6wTUS307rxXSFUU/rFq4ouFx02XqKK+otru4ZhzaJr7giqt0VdQ+wNeO0H0l3MZSuafHCJV3z4nXZ5KVrWrxwSReuRboRl3TNixcu6cK1SDfiki5cuHYcXrikCxeuHYfXllzxmpd0DXnhGvLCNeS1J1e4MlokcBUfXrikCxcuXLgULly4cOHCpXDhwtWWPE6NOz+5+PSKez/ouYrVzn+kkq80vVHvyohrkUeN0oUL1yLdKF24cC3SjdJVhitwLV5OJIbii2uo1XENjcRoPqV+gEO6hmKDa6jDLBL2LlyLXKikCxcuXLhwuTRKFy5cuHaff72Z9dKFa1a8Qrqka4109la7G0O6JlpfsHBNa+ILFq5pl4f430fqcc6j/3hg78pjkhWPrKmZTV0F8nTjTLmMeFv9tMOxTkszTjt3vWDdw5WM6qQr/BnCrzT52MOhS5QsErhwncSVRe65pQsXLly4FC5cuHbnClzShQsXrnbMQ39nD9KFC9cZ/7/LiipduNbg0osjXLQ0Iy5ca9UfjguXJ8nNJ/4AAAAASUVORK5CYII=\"},\"object_mask_expand\":4,\"x0\":0.759171,\"y0\":0.280702,\"x1\":1,\"y1\":0.516746},{\"name\":\"auto_object_3_3\",\"source\":\"auto\",\"label\":\"object_3\",\"score\":0.6611328125,\"layer\":2,\"object_id\":3,\"occlusion_priority\":733,\"priority\":87,\"importance\":1,\"pad\":8,\"blend\":8,\"object_mask\":{\"format\":\"png_base64\",\"box\":[85,339,257,278],\"width\":257,\"height\":278,\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAQEAAAEWCAAAAABDVH0CAAADWUlEQVR42u2dwXarMBBD0Zz8/y/rLd6ii562BGJjj66W7QHiG2k8JME+DoQQQgghhBBCCCGEEEIIIYRQurTha/ZHB6GFB6hTw787Ci3+FuvE+O8NQxt53EPGsQGB/6/RowayA4GxI6kuAC4fWF0AXD50OQ9Mp1dtLHD16E4euIagGlng2gl6eYAUXDFBtQrBlXOQgmpmgffPggeqmwXePk9HD3hTAiYFD8GkElbLEBgPmBTsR8CPna+tB04jeI2+/vJfTGry114T2yE9lQJ7iVbv9JVriZLmo81cYC80Oj9A4Mn38urLqfFX9NoIamgCdkBQMy62WDgGEfCxZPnwrJ7Qf/1bvT1grztLeEZX7Otdqp9v/GteBXDTFNir90seS8CDaG1zd+ybV/Tzg6zpTcBqRtAjXZDmFgaN6oh850g1mAs8aw5ZNQVL3+7MqIQbARiTAvOdUToBpxNwugdMCtIJmEqYTsCk4Gj1bHWlW4A68D4BUwm7LbFQ6RYI8IA+S8BUwn4LrTAbVvMQiBSkE9CHCbjjelMVv+BWZTcDVML3CLjnqnMVv+weKaj4lReraxkQHkgnoM8TcNflVyt+/VnqQHUMgdIroZgL0gkonYDGeMB9F2Kv+JXoqYQVvxlBtSoDwgPpBDSMgPFA5z1ZqAMVvy1PtSkDwgPpBEQdGEjAvXcnwwMQqPgt+vBAxe/SWNk3hl08oHQCGusBUwm7b1bLbFjbh0DpKRB1IJ2ARhMwHui/+QB1oNIt8AcB44GALUgqHcDOBDQhBWYuSNiHqNIBbEtAU1JgesKIzcgqHcCeBJSeAlEH0gmIuWAaAWfsyokHIACBCp8J8AAEIAABCEAAAr8SEB5YUiYFEIAABCAAAQhAAAIQgMBMAsIDEIAABCAAAeEBCEAAAsIDEDj6f2GAByBQR3opxAMQgEAd6YUAD7yO8T8BdTIBfSXJoR74VlGcRUA//cmJHvjOwf0JaIdcvI7lnhjw3A7ltd7DEJOtoXGfSGjEZyLqmIL5D9bQFb9JQNwZQQACEBAegIDwwIJ9DCmYTECkQH1DMOrOSO0qodoCOF0J1RXA+blAXcuhPv/7FfXtiHTmr9t5Rbd+xhTyeDpCCCGEEEIIIYQQQgghhBBCCCGEmusfB2+Lq4WVp7MAAAAASUVORK5CYII=\"},\"object_mask_expand\":4,\"x0\":0.070175,\"y0\":0.267943,\"x1\":0.274322,\"y1\":0.491228},{\"name\":\"auto_object_5_4\",\"source\":\"auto\",\"label\":\"object_5\",\"score\":0.6513671875,\"layer\":2,\"object_id\":4,\"occlusion_priority\":718,\"priority\":90,\"importance\":1,\"pad\":8,\"blend\":8,\"object_mask\":{\"format\":\"png_base64\",\"box\":[943,476,251,496],\"width\":251,\"height\":496,\"data\":\"iVBORw0KGgoAAAANSUhEUgAAAPsAAAHwCAAAAABFqUYNAAAEkklEQVR42u3dwZbiOBAEQJcf///LtZc97850G0uljLwPEJ0lCfMwc10iIiIiIiIiIiIiIiLyRurxR+yvPvrO9n7hr7upvV8arg3t/d7SmmPfkl9v0TfU3y8+V/e5vfeaQ3VE77uV/3rvG5V/L3nWPcq/Fz3vDvp72TOv169Z73ss/MX2pfx7+arrYPs6/Ab2Zbte7VJgBdsX8GuvhVtp633V0q8NN+zK7P3VQ29H+1uTXzv3VcH2L/8Naso6rWv0Z9S7+WvcBl3B9ucMW55xLx2J96Az6emBO6H3K3jmw+293l7JvVfyzFfyeq/kva6S9/lyxkXaW+/s7Ozs7Ozs7Ozs7N++iNA7+zX5s4veo/cy85n2mjH0es9c8Qf13pvYS+/safbS+9ab3X3lFm+9s48f+tY7Ozt7gr31vt5eZp59xwWv98wFf1rvbebZV9pr76HXO3va0OudnZ094bahO5d+4sz3DvbOXe/b3yP4iZV/r/fOPePa+c6eZW+9s7Ozs7Ozs7Ozs0+1t94T7W29X7t/SP350SOV33CbTf+h/T9+/bpz97rO3ec794xr7+vY2Ufb69Tl/uPeez7dzCcecL+x93j6c73Po///Lt5/9I97FuqB7xr1v88zsPNHvmc11O2Mu2I/sNM7+2Fbmd7Z2f/O3npnP+3Njd7Z2dnZW+/s7Ozs7OwDL2b0zs7Ozs5+6iGnd3Z2dnZ2dnZ2dnZ29pPspXd29hx76Z39OuzDSr2zp212emdnz1nwemdnZ2c/e6PXOzv7ISm9/9JeZp49zV56Z798Ph/Te5l5dvYce+mdnZ09wV56Z2fPsZfe2dPspXd29mv4h5X3lbvgzTw7O/sBm13rnT3N3np/xF5m/pihN/OZQ392723mH7HXUcXrnT1t6PXOnvb2Ru/saUOvd/a0odc7e9rQ6/3c1MP2OuRO8E9o52fby+8ePG0v+3ymvfR+uQc8rPcy8+zsOfbSO3uavfSeaS+9+93CtN7LzLOn2UvvU7d5M59Zu95DN7s7d+R/aa/J9CN7r3dmvgbTD+y93iuup8qP673eXbA9VH5W73/b4ydW/kTvNZX+xMzXULrruMTF/pC9ZtLNfOTEP2QvvQ+r/QT7j6fuEyt/bKn2PLkzLnWnv1MXu5lnD1zwemdnZ0/Y7PTOzs7Ozs5+3gGvd3b2nAWvd3Z29oTNTu/saUOvd/a0odc7e9rQ37lfOXncXnrPtJfeM+2l92uP36B92V56Z9956O8rd+jvK7d46z2zeL2zj9zoW+/safbWOzs7e4K99c6+3l56Z2dnZz/bXnpnZ8+xl97Z0+yld3b23VbXfeUueDPPnjb0d+5WZ+ZDh17vg4svvbPvZK+tbxPTO/vAoff785va6wr+Dfay12XaS+8B979PKv6+5uJ/+7ifQcPdIweyH3qF/ehL/4zazaoHbkR93MXAV/Hff2WfM4/uvQ7f3u9VfUI7f/dNV2/3imqz+1rqwPn6M32dex1Xe1311Cb3c6242KstbmZbc5lby+/kW3d5X2vvYxz6P0mLiIiIiIiIiIiIiIiI/Fn+AaUahJSNkcq6AAAAAElFTkSuQmCC\"},\"object_mask_expand\":4,\"x0\":0.752791,\"y0\":0.382775,\"x1\":0.950558,\"y1\":0.778309},{\"name\":\"tile_6\",\"source\":\"paint_mask\",\"label\":\"paint mask 1\",\"layer\":5,\"occlusion_priority\":3205,\"priority\":140,\"importance\":1,\"pad\":16,\"blend\":8,\"object_mask\":{\"format\":\"png_base64\",\"box\":[400,268,423,497],\"width\":423,\"height\":497,\"data\":\"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\"},\"object_mask_expand\":4,\"x0\":0.318979,\"y0\":0.216906,\"x1\":0.657097,\"y1\":0.61244}]}",
+        16,
+        8,
+        false,
+        8,
+        "sam3.1",
+        0,
+        "top cloth for the middle yellow person,the cloth for the left person, the cloth for the right person",
+        false,
+        32,
+        4,
+        10,
+        "",
+        "",
+        ""
+      ]
+    },
+    {
+      "id": 113,
+      "type": "TTP_Smart_Tile_Prompt_Override_Experimental",
+      "pos": [
+        7305.526919792755,
+        139.5437286893485
+      ],
+      "size": [
+        400,
+        326
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "tile_set",
+          "type": "TTP_SMART_TILE_SET",
+          "link": 190
+        }
+      ],
+      "outputs": [
+        {
+          "name": "tile_set",
+          "type": "TTP_SMART_TILE_SET",
+          "links": [
+            169
+          ]
+        },
+        {
+          "name": "override_json",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "summary",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "58eb154fa05f0c2ff690f607216f0d9bc26037b2",
+        "Node name for S&R": "TTP_Smart_Tile_Prompt_Override_Experimental",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "index",
+        "T1-T5",
+        "keep",
+        "replace",
+        "把衣服和裤子都移除，变成裸体",
+        "keep",
+        "",
+        ""
+      ]
+    },
+    {
+      "id": 6,
+      "type": "TTP_Smart_Tile_Loop_Source_Experimental",
+      "pos": [
+        6764.873449710325,
+        -989.9826531357488
+      ],
+      "size": [
+        386.2916015625,
+        398
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "tile_set",
+          "type": "TTP_SMART_TILE_SET",
+          "link": 156
+        },
+        {
+          "name": "clip",
+          "shape": 7,
+          "type": "CLIP",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            144
+          ]
+        },
+        {
+          "name": "tile_task",
+          "type": "TTP_SMART_TILE_TASK",
+          "links": [
+            50
+          ]
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "done",
+          "type": "BOOLEAN",
+          "links": null
+        },
+        {
+          "name": "status",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "links": [
+            185,
+            186
+          ]
+        },
+        {
+          "name": "negative",
+          "type": "STRING",
+          "links": [
+            175
+          ]
+        },
+        {
+          "name": "caption",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "label",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "prompt_tag",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "positive_conditioning",
+          "type": "CONDITIONING",
+          "links": null
+        },
+        {
+          "name": "negative_conditioning",
+          "type": "CONDITIONING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_ttp_toolset",
+        "ver": "13b942497bbdfa83cbaa97ed1f9afd197d9552ea",
+        "Node name for S&R": "TTP_Smart_Tile_Loop_Source_Experimental",
+        "aux_id": "TTPlanetPig/Comfyui_Tile_Toolset",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "default",
+        255,
+        1632,
+        "Process All Tiles",
+        "Stop Tile Loop",
+        "done"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      2,
+      0,
+      1,
+      1,
+      "MODEL"
+    ],
+    [
+      2,
+      1,
+      2,
+      3,
+      0,
+      "TTP_SMART_TILE_SET"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      0,
+      "IMAGE"
+    ],
+    [
+      37,
+      53,
+      0,
+      44,
+      0,
+      "LATENT"
+    ],
+    [
+      38,
+      46,
+      0,
+      44,
+      1,
+      "VAE"
+    ],
+    [
+      45,
+      52,
+      0,
+      54,
+      0,
+      "MODEL"
+    ],
+    [
+      47,
+      46,
+      0,
+      56,
+      1,
+      "VAE"
+    ],
+    [
+      48,
+      56,
+      0,
+      53,
+      3,
+      "LATENT"
+    ],
+    [
+      49,
+      44,
+      0,
+      57,
+      1,
+      "IMAGE"
+    ],
+    [
+      50,
+      6,
+      1,
+      57,
+      0,
+      "TTP_SMART_TILE_TASK"
+    ],
+    [
+      75,
+      2,
+      1,
+      1,
+      3,
+      "CLIP"
+    ],
+    [
+      103,
+      87,
+      0,
+      88,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      105,
+      88,
+      0,
+      53,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      125,
+      1,
+      2,
+      96,
+      0,
+      "TTP_SMART_TILE_SET"
+    ],
+    [
+      126,
+      73,
+      0,
+      96,
+      2,
+      "TTP_QWENVL3_MODEL"
+    ],
+    [
+      131,
+      98,
+      0,
+      70,
+      0,
+      "IMAGE"
+    ],
+    [
+      132,
+      98,
+      1,
+      86,
+      0,
+      "IMAGE"
+    ],
+    [
+      133,
+      57,
+      0,
+      98,
+      2,
+      "TTP_SMART_TILE_SET"
+    ],
+    [
+      135,
+      57,
+      1,
+      98,
+      6,
+      "BOOLEAN"
+    ],
+    [
+      136,
+      57,
+      1,
+      70,
+      1,
+      "BOOLEAN"
+    ],
+    [
+      138,
+      1,
+      0,
+      98,
+      4,
+      "IMAGE"
+    ],
+    [
+      139,
+      100,
+      0,
+      101,
+      0,
+      "UPSCALE_MODEL"
+    ],
+    [
+      140,
+      1,
+      0,
+      101,
+      1,
+      "IMAGE"
+    ],
+    [
+      143,
+      60,
+      0,
+      103,
+      1,
+      "UPSCALE_MODEL"
+    ],
+    [
+      144,
+      6,
+      0,
+      103,
+      0,
+      "IMAGE"
+    ],
+    [
+      145,
+      103,
+      0,
+      71,
+      0,
+      "IMAGE"
+    ],
+    [
+      147,
+      101,
+      0,
+      104,
+      0,
+      "IMAGE"
+    ],
+    [
+      148,
+      104,
+      0,
+      98,
+      3,
+      "IMAGE"
+    ],
+    [
+      151,
+      57,
+      0,
+      107,
+      0,
+      "TTP_SMART_TILE_SET"
+    ],
+    [
+      152,
+      1,
+      0,
+      107,
+      1,
+      "IMAGE"
+    ],
+    [
+      156,
+      108,
+      0,
+      6,
+      0,
+      "TTP_SMART_TILE_SET"
+    ],
+    [
+      158,
+      1,
+      0,
+      109,
+      0,
+      "IMAGE"
+    ],
+    [
+      159,
+      98,
+      0,
+      109,
+      1,
+      "IMAGE"
+    ],
+    [
+      161,
+      110,
+      0,
+      1,
+      4,
+      "TTP_QWENVL3_MODEL"
+    ],
+    [
+      162,
+      107,
+      0,
+      112,
+      0,
+      "FLOAT"
+    ],
+    [
+      163,
+      107,
+      0,
+      98,
+      7,
+      "FLOAT"
+    ],
+    [
+      164,
+      107,
+      0,
+      104,
+      1,
+      "FLOAT"
+    ],
+    [
+      165,
+      57,
+      1,
+      107,
+      2,
+      "BOOLEAN"
+    ],
+    [
+      166,
+      54,
+      0,
+      114,
+      0,
+      "MODEL"
+    ],
+    [
+      167,
+      114,
+      0,
+      90,
+      0,
+      "MODEL"
+    ],
+    [
+      169,
+      113,
+      0,
+      108,
+      0,
+      "TTP_SMART_TILE_SET"
+    ],
+    [
+      170,
+      116,
+      0,
+      118,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      171,
+      115,
+      0,
+      119,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      172,
+      45,
+      0,
+      116,
+      0,
+      "CLIP"
+    ],
+    [
+      173,
+      45,
+      0,
+      115,
+      0,
+      "CLIP"
+    ],
+    [
+      175,
+      6,
+      7,
+      115,
+      5,
+      "STRING"
+    ],
+    [
+      176,
+      118,
+      0,
+      87,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      177,
+      119,
+      0,
+      53,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      178,
+      90,
+      0,
+      117,
+      0,
+      "MODEL"
+    ],
+    [
+      179,
+      117,
+      0,
+      53,
+      0,
+      "MODEL"
+    ],
+    [
+      180,
+      71,
+      0,
+      116,
+      2,
+      "IMAGE"
+    ],
+    [
+      181,
+      71,
+      0,
+      115,
+      2,
+      "IMAGE"
+    ],
+    [
+      182,
+      71,
+      0,
+      56,
+      0,
+      "IMAGE"
+    ],
+    [
+      183,
+      44,
+      0,
+      121,
+      0,
+      "IMAGE"
+    ],
+    [
+      184,
+      71,
+      0,
+      122,
+      0,
+      "IMAGE"
+    ],
+    [
+      185,
+      6,
+      6,
+      116,
+      5,
+      "STRING"
+    ],
+    [
+      186,
+      6,
+      6,
+      123,
+      0,
+      "STRING"
+    ],
+    [
+      187,
+      46,
+      0,
+      116,
+      1,
+      "VAE"
+    ],
+    [
+      188,
+      46,
+      0,
+      115,
+      1,
+      "VAE"
+    ],
+    [
+      189,
+      96,
+      0,
+      126,
+      0,
+      "TTP_SMART_TILE_SET"
+    ],
+    [
+      190,
+      126,
+      0,
+      113,
+      0,
+      "TTP_SMART_TILE_SET"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7627768444385489,
+      "offset": [
+        -6277.12515619927,
+        733.2302431626497
+      ]
+    },
+    "frontendVersion": "1.45.20",
+    "ue_links": [],
+    "links_added_by_ue": [],
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true,
+    "anomalous_hashes": {}
+  },
+  "version": 0.4
+}
