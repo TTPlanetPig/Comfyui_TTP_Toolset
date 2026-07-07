@@ -5229,7 +5229,6 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 "small_tile_on_top": ("BOOLEAN", {"default": False}),
                 "auto_composite_policy": (["safe_auto", "strict_layer", "soft_detail", "replace_object", "replace_tile"], {"default": "safe_auto"}),
                 "replace_tile_shape": (["mask_first", "tile_box_first"], {"default": "mask_first"}),
-                "replace_stitch_mask": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 "sampled_tiles": ("IMAGE",),
@@ -5271,7 +5270,6 @@ class TTP_Smart_Tile_Assemble_Experimental:
         small_tile_on_top=False,
         auto_composite_policy="safe_auto",
         replace_tile_shape="mask_first",
-        replace_stitch_mask=True,
         sampled_tiles=None,
         tile_meta=None,
         tile_set=None,
@@ -5390,7 +5388,6 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 "small_tile_on_top": _ttp_safe_bool(small_tile_on_top, False),
                 "auto_composite_policy": str(auto_composite_policy or "safe_auto"),
                 "replace_tile_shape": str(replace_tile_shape or "mask_first"),
-                "replace_stitch_mask": _ttp_safe_bool(replace_stitch_mask, True),
                 "mask_blend_mode": str(mask_blend_mode),
                 "large_tile_policy": str(large_tile_policy),
             },
@@ -5424,7 +5421,6 @@ class TTP_Smart_Tile_Assemble_Experimental:
         if composite_policy not in ("safe_auto", "strict_layer", "soft_detail", "replace_object", "replace_tile"):
             composite_policy = "safe_auto"
         replace_tile_shape_default = _ttp_normalize_replace_tile_shape(replace_tile_shape)
-        replace_stitch_mask = _ttp_safe_bool(replace_stitch_mask, True)
         auto_policy_ranking = composite_policy in ("safe_auto", "soft_detail", "replace_object", "replace_tile")
         destructive_occlusion = composite_policy in ("strict_layer", "replace_object", "replace_tile")
         replace_tile_policy_active = composite_policy == "replace_tile" or any(
@@ -5579,7 +5575,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
                 out_h,
                 mask_mode,
                 blend,
-                hard_stitch=replace_stitch_mask and replace_tile_mode and tile_replace_shape != "tile_box_first",
+                hard_stitch=replace_tile_mode and tile_replace_shape != "tile_box_first",
                 prefer_own_mask=replace_tile_mode,
             )
             if replace_tile_mode:
@@ -5626,7 +5622,7 @@ class TTP_Smart_Tile_Assemble_Experimental:
             rank_occlusion = float(tile.get("occlusion_priority", 0.0))
             rank_layer = float(tile.get("layer", 0.0))
             rank_priority = priority
-            rank_tiebreaker = 0.0
+            rank_tiebreaker = (float(index) + 1.0) * 0.001 if replace_tile_mode else 0.0
             if replace_tile_mode:
                 rank_occlusion = max(rank_occlusion, 1.0)
             if auto_policy_ranking and not is_large_tile:

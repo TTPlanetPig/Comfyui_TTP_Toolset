@@ -228,7 +228,110 @@ function maskOverlayEnabled(node) {
     return Boolean(node?.ttpSmartTileShowMasks);
 }
 
-function tintedMaskCanvas(maskImage, color) {
+function stitchMaskPreviewEnabled(node) {
+    return Boolean(node?.ttpSmartTilePreviewStitchMask);
+}
+
+function maskValuesFromImageData(imageData) {
+    const data = imageData.data;
+    let maxRgb = 0;
+    let minAlpha = 255;
+    let maxAlpha = 0;
+    for (let index = 0; index < data.length; index += 4) {
+        maxRgb = Math.max(maxRgb, data[index], data[index + 1], data[index + 2]);
+        minAlpha = Math.min(minAlpha, data[index + 3]);
+        maxAlpha = Math.max(maxAlpha, data[index + 3]);
+    }
+    const useAlphaOnly = maxRgb === 0 && maxAlpha > minAlpha;
+    const values = new Uint8Array(Math.floor(data.length / 4));
+    let hasForeground = false;
+    for (let index = 0, pixel = 0; index < data.length; index += 4, pixel += 1) {
+        const maskValue = useAlphaOnly
+            ? data[index + 3]
+            : Math.max(data[index], data[index + 1], data[index + 2]);
+        values[pixel] = maskValue;
+        if (maskValue > 0) {
+            hasForeground = true;
+        }
+    }
+    return { values, hasForeground };
+}
+
+function boxBlurHorizontal(values, width, height, radius) {
+    const output = new Uint8Array(values.length);
+    const blurRadius = Math.max(1, Math.round(Number(radius) || 1));
+    for (let y = 0; y < height; y += 1) {
+        const rowOffset = y * width;
+        const prefix = new Uint32Array(width + 1);
+        for (let x = 0; x < width; x += 1) {
+            prefix[x + 1] = prefix[x] + values[rowOffset + x];
+        }
+        for (let x = 0; x < width; x += 1) {
+            const left = Math.max(0, x - blurRadius);
+            const right = Math.min(width - 1, x + blurRadius);
+            const count = Math.max(1, right - left + 1);
+            output[rowOffset + x] = Math.round((prefix[right + 1] - prefix[left]) / count);
+        }
+    }
+    return output;
+}
+
+function boxBlurVertical(values, width, height, radius) {
+    const output = new Uint8Array(values.length);
+    const blurRadius = Math.max(1, Math.round(Number(radius) || 1));
+    for (let x = 0; x < width; x += 1) {
+        const prefix = new Uint32Array(height + 1);
+        for (let y = 0; y < height; y += 1) {
+            prefix[y + 1] = prefix[y] + values[y * width + x];
+        }
+        for (let y = 0; y < height; y += 1) {
+            const top = Math.max(0, y - blurRadius);
+            const bottom = Math.min(height - 1, y + blurRadius);
+            const count = Math.max(1, bottom - top + 1);
+            output[y * width + x] = Math.round((prefix[bottom + 1] - prefix[top]) / count);
+        }
+    }
+    return output;
+}
+
+function blurMaskValues(values, width, height, radius) {
+    const horizontal = boxBlurHorizontal(values, width, height, radius);
+    return boxBlurVertical(horizontal, width, height, radius);
+}
+
+function stitchedMaskValues(values, width, height, feather) {
+    const hard = new Uint8Array(values.length);
+    const threshold = Math.floor(255 * 0.05);
+    let hasForeground = false;
+    for (let index = 0; index < values.length; index += 1) {
+        if (values[index] > threshold) {
+            hard[index] = 255;
+            hasForeground = true;
+        }
+    }
+    if (!hasForeground) {
+        return hard;
+    }
+    const radius = Math.max(0, Math.round(Number(feather) || 0));
+    if (radius <= 0) {
+        return hard;
+    }
+    const stitchRadius = Math.max(1, Math.min(64, Math.round(radius * 0.25)));
+    const expanded = slidingMaxVertical(
+        slidingMaxHorizontal(hard, width, height, stitchRadius),
+        width,
+        height,
+        stitchRadius
+    );
+    const softened = blurMaskValues(expanded, width, height, stitchRadius);
+    const output = new Uint8Array(values.length);
+    for (let index = 0; index < values.length; index += 1) {
+        output[index] = Math.max(hard[index], softened[index]);
+    }
+    return output;
+}
+
+function tintedMaskCanvas(maskImage, color, options = {}) {
     const width = Math.max(1, Math.round(maskImage?.naturalWidth || maskImage?.width || 1));
     const height = Math.max(1, Math.round(maskImage?.naturalHeight || maskImage?.height || 1));
     const canvas = document.createElement("canvas");
@@ -242,30 +345,19 @@ function tintedMaskCanvas(maskImage, color) {
     context.drawImage(maskImage, 0, 0, width, height);
     const imageData = context.getImageData(0, 0, width, height);
     const data = imageData.data;
-    let maxRgb = 0;
-    let minAlpha = 255;
-    let maxAlpha = 0;
-    for (let index = 0; index < data.length; index += 4) {
-        maxRgb = Math.max(maxRgb, data[index], data[index + 1], data[index + 2]);
-        minAlpha = Math.min(minAlpha, data[index + 3]);
-        maxAlpha = Math.max(maxAlpha, data[index + 3]);
+    const extracted = maskValuesFromImageData(imageData);
+    if (!extracted.hasForeground) {
+        return null;
     }
-    const useAlphaOnly = maxRgb === 0 && maxAlpha > minAlpha;
-    let hasForeground = false;
-    for (let index = 0; index < data.length; index += 4) {
-        const maskValue = useAlphaOnly
-            ? data[index + 3]
-            : Math.max(data[index], data[index + 1], data[index + 2]);
-        if (maskValue > 0) {
-            hasForeground = true;
-        }
+    const values = options.stitch
+        ? stitchedMaskValues(extracted.values, width, height, options.feather)
+        : extracted.values;
+    for (let index = 0, pixel = 0; index < data.length; index += 4, pixel += 1) {
+        const maskValue = values[pixel];
         data[index] = color[0];
         data[index + 1] = color[1];
         data[index + 2] = color[2];
         data[index + 3] = Math.round(maskValue * 0.52);
-    }
-    if (!hasForeground) {
-        return null;
     }
     context.putImageData(imageData, 0, 0);
     return canvas;
@@ -297,7 +389,10 @@ async function renderMaskOverlay(node, canvas, tiles) {
             return;
         }
         const color = MASK_OVERLAY_COLORS[index % MASK_OVERLAY_COLORS.length];
-        const tintedMask = tintedMaskCanvas(maskImage, color);
+        const tintedMask = tintedMaskCanvas(maskImage, color, {
+            stitch: stitchMaskPreviewEnabled(node),
+            feather: Number(tile?.blend ?? layoutDefaults(node).blend ?? 0),
+        });
         if (!tintedMask) {
             continue;
         }
@@ -1644,6 +1739,9 @@ function renderEditor(node) {
     if (!hasTileMasks && maskOverlayEnabled(node)) {
         node.ttpSmartTileShowMasks = false;
     }
+    if (!hasTileMasks && stitchMaskPreviewEnabled(node)) {
+        node.ttpSmartTilePreviewStitchMask = false;
+    }
     writeLayout(node, tiles, selectedIndex, selectedIndexes);
 
     const sourceSize = imageSourceSize(node);
@@ -2227,6 +2325,16 @@ function renderEditor(node) {
         node.ttpSmartTilePaintMode = node.ttpSmartTilePaintMode === "erase" ? "off" : "erase";
         renderEditor(node);
     });
+    const moveButton = createButton("Move", () => {
+        node.ttpSmartTilePaintMode = "off";
+        renderEditor(node);
+    });
+    moveButton.title = "Return to tile move and resize mode";
+    if (paintMode === "off") {
+        moveButton.style.background = "#a7f3d0";
+        moveButton.style.borderColor = "#34d399";
+        moveButton.style.color = "#064e3b";
+    }
     if (paintMode === "paint") {
         paintButton.style.background = "#38bdf8";
         paintButton.style.borderColor = "#7dd3fc";
@@ -2247,9 +2355,24 @@ function renderEditor(node) {
         maskOverlayButton.style.borderColor = "#34d399";
         maskOverlayButton.style.color = "#064e3b";
     }
+    const stitchMaskButton = createButton(stitchMaskPreviewEnabled(node) ? "Raw masks" : "Stitch mask", () => {
+        node.ttpSmartTilePreviewStitchMask = !stitchMaskPreviewEnabled(node);
+        if (node.ttpSmartTilePreviewStitchMask) {
+            node.ttpSmartTileShowMasks = true;
+        }
+        renderEditor(node);
+    }, !hasTileMasks);
+    stitchMaskButton.title = "Preview the hardened and feathered mask shape used by replace pasteback";
+    if (stitchMaskPreviewEnabled(node)) {
+        stitchMaskButton.style.background = "#fde68a";
+        stitchMaskButton.style.borderColor = "#f59e0b";
+        stitchMaskButton.style.color = "#78350f";
+    }
     paintControls.append(
         paintLabel,
+        moveButton,
         maskOverlayButton,
+        stitchMaskButton,
         paintButton,
         eraseButton,
         document.createTextNode("px"),

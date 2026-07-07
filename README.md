@@ -41,6 +41,7 @@ Useful editor actions:
 - `Replace grid`: replace the whole layout with an even grid.
 - `Grid in T#`: subdivide the selected tile without rebuilding the whole layout.
 - `Show masks` / `Hide masks`: toggle a colored overlay for tile object masks in the editor.
+- `Stitch mask` / `Raw masks`: preview the hardened and feathered replace-paste mask shape without changing saved masks.
 - `Mask to Tile`: turn painted regions into object tiles.
 - `Merge masks`: Shift/Cmd/Ctrl-select multiple tiles, then union their cropped object masks back onto the selected tiles.
 - `Merge tiles`: Shift/Cmd/Ctrl-select multiple tiles, then replace them with one larger tile; existing masks are unioned into the merged tile when available.
@@ -130,7 +131,7 @@ This workflow is the recommended full Smart Tile loop. It uses `TTP Smart Tile I
 | `Image Upscale Prep` | `scale=2.5`, `round_to=8`, `max_megapixels=1.5`, `use_upscale_model=true` | Enlarges each tile before img2img while keeping each tile under the megapixel cap. / 采样前放大每块 tile，同时用百万像素上限控制显存。 |
 | `Loop Source` / `Loop Collect` | `Process All Tiles` workflow | The tile count can be 4, 8, 16, or any layout count; no manual sampler duplication is needed. / 分块数量可以变化，不需要手动复制多套 sampler。 |
 | `Output Size Estimate` | `focus_weighted` | Estimates the final canvas from processed tile sizes, giving more influence to focus/detail tiles. / 根据处理后的 tile 尺寸估算最终画布，并更重视细节块。 |
-| `Assemble` | `assemble_mode=final_only`, `mask_blend_mode=mask_feather`, `color_correction=histogram`, `small_tile_on_top=true`, `auto_composite_policy=safe_auto`, `replace_stitch_mask=true` | Assembles only after the loop is done, uses mask-aware feathering, and keeps small detail tiles above larger context tiles. Turn `replace_stitch_mask` off when edit masks should stay soft instead of being hardened for stitch pasteback. / 循环结束后只拼合一次，使用蒙版羽化，并让小细节块优先于大背景块。`replace_stitch_mask` 关闭时，edit 蒙版不会被硬化贴回。 |
+| `Assemble` | `assemble_mode=final_only`, `mask_blend_mode=mask_feather`, `color_correction=histogram`, `small_tile_on_top=true`, `auto_composite_policy=safe_auto` | Assembles only after the loop is done, uses mask-aware feathering, and keeps small detail tiles above larger context tiles. / 循环结束后只拼合一次，使用蒙版羽化，并让小细节块优先于大背景块。 |
 
 Before running the example, replace model filenames such as the diffusion model, CLIP/text encoder, VAE, LoRA, and upscale model with files installed on your machine. The workflow is meant as a wiring reference; model choices can be changed freely.
 

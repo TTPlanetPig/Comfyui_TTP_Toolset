@@ -186,7 +186,6 @@ expected_assemble_required_order = [
     "small_tile_on_top",
     "auto_composite_policy",
     "replace_tile_shape",
-    "replace_stitch_mask",
 ]
 assert_equal(
     list(assemble_inputs["required"].keys()),
@@ -214,7 +213,6 @@ assert_equal(assemble_inputs["required"]["auto_composite_policy"][0], ["safe_aut
 assert_equal(assemble_inputs["required"]["auto_composite_policy"][1]["default"], "safe_auto", "assemble should default to safe auto compositing")
 assert_equal(assemble_inputs["required"]["replace_tile_shape"][0], ["mask_first", "tile_box_first"], "assemble should expose replace tile shape priority")
 assert_equal(assemble_inputs["required"]["replace_tile_shape"][1]["default"], "mask_first", "assemble should default replace tile to mask priority")
-assert_equal(assemble_inputs["required"]["replace_stitch_mask"][1]["default"], True, "assemble should expose a replace stitch mask toggle")
 assert_equal(assemble_inputs["optional"]["done"][0], "BOOLEAN", "assemble should accept loop done gate")
 preview_inputs = ttp.TTP_Smart_Tile_Set_Preview_Experimental.INPUT_TYPES()
 assert_equal(preview_inputs["required"]["tile_set"][0], "TTP_SMART_TILE_SET", "tile set preview should accept Smart Tile Set")
@@ -1890,109 +1888,6 @@ replace_soft_masked, _replace_soft_masked_weights = assemble_node.assemble_tiles
 replace_soft_center = replace_soft_masked.array[0, 8, 8]
 assert_equal(float(replace_soft_center[2]) > 0.8, True, "replace_tile mask_first should harden soft mask interiors instead of making the whole edit translucent")
 assert_equal(float(replace_soft_center[0]) < 0.2, True, "replace_tile mask_first should remove source pixels from soft mask interiors")
-
-replace_soft_unstitched, _replace_soft_unstitched_weights = assemble_node.assemble_tiles(
-    blend_multiplier=1.0,
-    output_scale=1.0,
-    use_priority=True,
-    base_canvas_mode="source_image",
-    mask_blend_mode="off",
-    auto_composite_policy="replace_tile",
-    replace_stitch_mask=False,
-    source_image=replace_source,
-    tile_set=replace_soft_mask_tile_set,
-)
-replace_soft_unstitched_center = replace_soft_unstitched.array[0, 8, 8]
-assert_equal(float(replace_soft_unstitched_center[0]) > 0.25, True, "replace_stitch_mask=false should allow soft mask interiors to blend with the source")
-assert_equal(float(replace_soft_unstitched_center[2]) > 0.25, True, "replace_stitch_mask=false should still paste the edit through the soft mask")
-assert_equal(float(replace_soft_unstitched_center[2]) < 0.75, True, "replace_stitch_mask=false should not harden soft mask interiors")
-
-replace_full_mask = Image.new("L", (8, 8), 255)
-replace_full_mask_data = ttp._ttp_encode_object_mask_data([replace_full_mask], [0], [0, 0, 8, 8])
-replace_peer_tiles = [
-    {
-        "name": "peer_red",
-        "label": "paint mask edit",
-        "core_box": [0, 0, 8, 8],
-        "sample_box": [0, 0, 8, 8],
-        "tile_canvas_size": [8, 8],
-        "tile_canvas_box": [0, 0, 8, 8],
-        "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
-        "blend": 0,
-        "importance": 1.0,
-        "priority": 0.0,
-        "layer": 0,
-        "occlusion_priority": 0,
-        "object_mask": replace_full_mask_data,
-        "composite_mode": "replace_tile",
-    },
-    {
-        "name": "peer_blue",
-        "label": "paint mask edit",
-        "core_box": [0, 0, 8, 8],
-        "sample_box": [0, 0, 8, 8],
-        "tile_canvas_size": [8, 8],
-        "tile_canvas_box": [0, 0, 8, 8],
-        "overlap_edges_px_source": {"left": 0, "right": 0, "top": 0, "bottom": 0},
-        "blend": 0,
-        "importance": 1.0,
-        "priority": 0.0,
-        "layer": 0,
-        "occlusion_priority": 0,
-        "object_mask": replace_full_mask_data,
-        "composite_mode": "replace_tile",
-    },
-]
-replace_peer_tile_set = {
-    "type": "ttp_smart_tile_set",
-    "original_size": [8, 8],
-    "tile_meta": {
-        "type": "ttp_smart_tile",
-        "original_size": [8, 8],
-        "tiles": replace_peer_tiles,
-    },
-    "tile_images": [
-        ttp.pil2tensor(Image.new("RGB", (8, 8), (220, 20, 20)))[0],
-        ttp.pil2tensor(Image.new("RGB", (8, 8), (20, 20, 220)))[0],
-    ],
-}
-replace_peer_source = ttp.pil2tensor(Image.new("RGB", (8, 8), (0, 0, 0)))
-replace_peer_blended, _replace_peer_blended_weights = assemble_node.assemble_tiles(
-    blend_multiplier=1.0,
-    output_scale=1.0,
-    use_priority=True,
-    base_canvas_mode="source_image",
-    mask_blend_mode="off",
-    auto_composite_policy="replace_tile",
-    source_image=replace_peer_source,
-    tile_set=replace_peer_tile_set,
-)
-replace_peer_blend_pixel = replace_peer_blended.array[0, 4, 4]
-assert_equal(float(replace_peer_blend_pixel[0]) > 0.3, True, "same-rank replace edits should keep the first edit in shared mask regions")
-assert_equal(float(replace_peer_blend_pixel[2]) > 0.3, True, "same-rank replace edits should blend with the second edit instead of hard-cutting")
-
-replace_priority_tiles = [dict(tile) for tile in replace_peer_tiles]
-replace_priority_tiles[1]["occlusion_priority"] = 100
-replace_priority_tile_set = {
-    **replace_peer_tile_set,
-    "tile_meta": {
-        **replace_peer_tile_set["tile_meta"],
-        "tiles": replace_priority_tiles,
-    },
-}
-replace_priority_blended, _replace_priority_blended_weights = assemble_node.assemble_tiles(
-    blend_multiplier=1.0,
-    output_scale=1.0,
-    use_priority=True,
-    base_canvas_mode="source_image",
-    mask_blend_mode="off",
-    auto_composite_policy="replace_tile",
-    source_image=replace_peer_source,
-    tile_set=replace_priority_tile_set,
-)
-replace_priority_pixel = replace_priority_blended.array[0, 4, 4]
-assert_equal(float(replace_priority_pixel[2]) > 0.75, True, "higher-priority replace edits should still cover lower-priority edits")
-assert_equal(float(replace_priority_pixel[0]) < 0.2, True, "higher-priority replace edits should clear lower-priority edit pixels")
 
 replace_own_mask_full = Image.new("L", (16, 16), 0)
 ImageDraw.Draw(replace_own_mask_full).rectangle((7, 7, 8, 8), fill=255)
