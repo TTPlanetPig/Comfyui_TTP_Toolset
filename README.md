@@ -401,10 +401,10 @@ https://github.com/user-attachments/assets/af06b9d3-9c84-4a83-ba90-eb4ec4bb2e99
 
 
 ## **Star History**
-<a href="https://star-history.com/#TTPlanetPig/Comfyui_TTP_Toolset&Date">
+<a href="https://star-history.dera.page/#TTPlanetPig/Comfyui_TTP_Toolset&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=TTPlanetPig/Comfyui_TTP_Toolset&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=TTPlanetPig/Comfyui_TTP_Toolset&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=TTPlanetPig/Comfyui_TTP_Toolset&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=TTPlanetPig/Comfyui_TTP_Toolset&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=TTPlanetPig/Comfyui_TTP_Toolset&type=Date" />
+   <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=TTPlanetPig/Comfyui_TTP_Toolset&type=Date" />
  </picture>
 </a>
